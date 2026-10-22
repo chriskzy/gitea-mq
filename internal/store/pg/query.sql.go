@@ -405,6 +405,36 @@ func (q *Queries) GetQueueEntry(ctx context.Context, arg GetQueueEntryParams) (Q
 	return i, err
 }
 
+const insertEvent = `-- name: InsertEvent :exec
+INSERT INTO queue_events (repo_id, kind, pr_number, batch_id, target_branch, head_sha, reason, detail)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+`
+
+type InsertEventParams struct {
+	RepoID       int64       `json:"repo_id"`
+	Kind         string      `json:"kind"`
+	PrNumber     pgtype.Int8 `json:"pr_number"`
+	BatchID      pgtype.Int8 `json:"batch_id"`
+	TargetBranch string      `json:"target_branch"`
+	HeadSha      string      `json:"head_sha"`
+	Reason       string      `json:"reason"`
+	Detail       []byte      `json:"detail"`
+}
+
+func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error {
+	_, err := q.db.Exec(ctx, insertEvent,
+		arg.RepoID,
+		arg.Kind,
+		arg.PrNumber,
+		arg.BatchID,
+		arg.TargetBranch,
+		arg.HeadSha,
+		arg.Reason,
+		arg.Detail,
+	)
+	return err
+}
+
 const listActiveEntriesByRepo = `-- name: ListActiveEntriesByRepo :many
 
 SELECT id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority FROM queue_entries
@@ -438,6 +468,81 @@ func (q *Queries) ListActiveEntriesByRepo(ctx context.Context, repoID int64) ([]
 			&i.ErrorMessage,
 			&i.ActiveBatchID,
 			&i.Priority,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEvents = `-- name: ListEvents :many
+SELECT e.id, e.kind, e.pr_number, e.batch_id, e.target_branch, e.head_sha, e.reason, e.detail, e.created_at,
+       r.forge, r.owner, r.name
+FROM queue_events e
+JOIN repos r ON r.id = e.repo_id
+WHERE e.id > $1
+  AND ($2::bigint = 0 OR e.repo_id = $2)
+  AND ($3::text = '' OR e.kind = $3)
+  AND e.created_at >= $4
+ORDER BY e.id
+LIMIT $5
+`
+
+type ListEventsParams struct {
+	AfterID int64              `json:"after_id"`
+	RepoID  int64              `json:"repo_id"`
+	Kind    string             `json:"kind"`
+	Since   pgtype.Timestamptz `json:"since"`
+	Lim     int32              `json:"lim"`
+}
+
+type ListEventsRow struct {
+	ID           int64              `json:"id"`
+	Kind         string             `json:"kind"`
+	PrNumber     pgtype.Int8        `json:"pr_number"`
+	BatchID      pgtype.Int8        `json:"batch_id"`
+	TargetBranch string             `json:"target_branch"`
+	HeadSha      string             `json:"head_sha"`
+	Reason       string             `json:"reason"`
+	Detail       []byte             `json:"detail"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	Forge        string             `json:"forge"`
+	Owner        string             `json:"owner"`
+	Name         string             `json:"name"`
+}
+
+func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]ListEventsRow, error) {
+	rows, err := q.db.Query(ctx, listEvents,
+		arg.AfterID,
+		arg.RepoID,
+		arg.Kind,
+		arg.Since,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEventsRow
+	for rows.Next() {
+		var i ListEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.PrNumber,
+			&i.BatchID,
+			&i.TargetBranch,
+			&i.HeadSha,
+			&i.Reason,
+			&i.Detail,
+			&i.CreatedAt,
+			&i.Forge,
+			&i.Owner,
+			&i.Name,
 		); err != nil {
 			return nil, err
 		}
@@ -489,6 +594,18 @@ func (q *Queries) ListLiveBatchesByRepo(ctx context.Context, repoID int64) ([]Ba
 		return nil, err
 	}
 	return items, nil
+}
+
+const pruneEvents = `-- name: PruneEvents :execrows
+DELETE FROM queue_events WHERE created_at < $1
+`
+
+func (q *Queries) PruneEvents(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, pruneEvents, createdAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const saveBatch = `-- name: SaveBatch :one
@@ -616,6 +733,57 @@ type SetEntryPriorityParams struct {
 func (q *Queries) SetEntryPriority(ctx context.Context, arg SetEntryPriorityParams) error {
 	_, err := q.db.Exec(ctx, setEntryPriority, arg.RepoID, arg.PrNumber, arg.Priority)
 	return err
+}
+
+const summarizeEvents = `-- name: SummarizeEvents :many
+SELECT r.forge, r.owner, r.name, e.kind, e.reason, COUNT(*)::bigint AS count
+FROM queue_events e
+JOIN repos r ON r.id = e.repo_id
+WHERE e.created_at >= $1
+  AND ($2::bigint = 0 OR e.repo_id = $2)
+GROUP BY r.forge, r.owner, r.name, e.kind, e.reason
+ORDER BY r.forge, r.owner, r.name, e.kind, e.reason
+`
+
+type SummarizeEventsParams struct {
+	Since  pgtype.Timestamptz `json:"since"`
+	RepoID int64              `json:"repo_id"`
+}
+
+type SummarizeEventsRow struct {
+	Forge  string `json:"forge"`
+	Owner  string `json:"owner"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Reason string `json:"reason"`
+	Count  int64  `json:"count"`
+}
+
+func (q *Queries) SummarizeEvents(ctx context.Context, arg SummarizeEventsParams) ([]SummarizeEventsRow, error) {
+	rows, err := q.db.Query(ctx, summarizeEvents, arg.Since, arg.RepoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SummarizeEventsRow
+	for rows.Next() {
+		var i SummarizeEventsRow
+		if err := rows.Scan(
+			&i.Forge,
+			&i.Owner,
+			&i.Name,
+			&i.Kind,
+			&i.Reason,
+			&i.Count,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const takeQueuedHead = `-- name: TakeQueuedHead :many

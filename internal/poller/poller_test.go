@@ -3,6 +3,7 @@ package poller_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -667,5 +668,37 @@ func TestRun_TriggerPollsIdleRepo(t *testing.T) {
 	// Startup poll + triggered poll.
 	if listed != 2 {
 		t.Fatalf("triggered idle repo polled forge %d times, want 2", listed)
+	}
+}
+
+// A downstream consumer (e.g. a dispatcher notifying authors) follows
+// ejections through the event log; each removal must carry its reason.
+func TestPollOnce_RecordsEvents(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	mockAutomergePRs(mock, makePR(42, "sha42", "main"))
+	mock.MergeBranchesFn = func(_ context.Context, _, _, _, _, _ string) (*gitea.MergeResult, error) {
+		return &gitea.MergeResult{SHA: "merge-sha"}, nil
+	}
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+
+	// New push → ejected with reason "pushed".
+	mockAutomergePRs(mock, makePR(42, "newsha", "main"))
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+
+	evs, err := svc.ListEvents(ctx, queue.EventFilter{RepoID: repoID, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, ev := range evs {
+		got = append(got, ev.Kind+":"+ev.Reason)
+	}
+	want := []string{"enqueued:automerge detection", "testing_started:", "ejected:pushed"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
 	}
 }

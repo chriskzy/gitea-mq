@@ -189,6 +189,19 @@ type QueueEntry struct {
 	Priority         bool               `json:"priority"`
 }
 
+type QueueEvent struct {
+	ID           int64              `json:"id"`
+	RepoID       int64              `json:"repo_id"`
+	Kind         string             `json:"kind"`
+	PrNumber     pgtype.Int8        `json:"pr_number"`
+	BatchID      pgtype.Int8        `json:"batch_id"`
+	TargetBranch string             `json:"target_branch"`
+	HeadSha      string             `json:"head_sha"`
+	Reason       string             `json:"reason"`
+	Detail       []byte             `json:"detail"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type Repo struct {
 	ID        int64              `json:"id"`
 	Owner     string             `json:"owner"`

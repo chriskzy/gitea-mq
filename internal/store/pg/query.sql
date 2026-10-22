@@ -146,3 +146,31 @@ RETURNING *;
 -- name: CancelBatchesByRepo :exec
 UPDATE batches SET state = 'cancelled'
 WHERE id IN (SELECT l.id FROM batches l WHERE l.repo_id = $1 AND l.state IN ('forming', 'testing') ORDER BY l.id FOR UPDATE);
+
+-- name: InsertEvent :exec
+INSERT INTO queue_events (repo_id, kind, pr_number, batch_id, target_branch, head_sha, reason, detail)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- name: ListEvents :many
+SELECT e.id, e.kind, e.pr_number, e.batch_id, e.target_branch, e.head_sha, e.reason, e.detail, e.created_at,
+       r.forge, r.owner, r.name
+FROM queue_events e
+JOIN repos r ON r.id = e.repo_id
+WHERE e.id > @after_id
+  AND (@repo_id::bigint = 0 OR e.repo_id = @repo_id)
+  AND (@kind::text = '' OR e.kind = @kind)
+  AND e.created_at >= @since
+ORDER BY e.id
+LIMIT @lim;
+
+-- name: SummarizeEvents :many
+SELECT r.forge, r.owner, r.name, e.kind, e.reason, COUNT(*)::bigint AS count
+FROM queue_events e
+JOIN repos r ON r.id = e.repo_id
+WHERE e.created_at >= @since
+  AND (@repo_id::bigint = 0 OR e.repo_id = @repo_id)
+GROUP BY r.forge, r.owner, r.name, e.kind, e.reason
+ORDER BY r.forge, r.owner, r.name, e.kind, e.reason;
+
+-- name: PruneEvents :execrows
+DELETE FROM queue_events WHERE created_at < $1;

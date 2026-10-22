@@ -37,6 +37,10 @@ type Config struct {
 	LogLevel            string
 	// CacheDir holds persistent bare git clones used for merge operations.
 	CacheDir string
+	// Metrics enables the in-memory Prometheus endpoint at /metrics.
+	Metrics bool
+	// EventRetention is how long queue events are kept.
+	EventRetention time.Duration
 }
 
 type GiteaConfig struct {
@@ -176,6 +180,15 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.BisectMaxSteps, err = parseInt("GITEA_MQ_BISECT_MAX_STEPS", 0, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg.Metrics, err = parseBool("GITEA_MQ_METRICS", false)
+	if err != nil {
+		return nil, err
+	}
+	cfg.EventRetention, err = parseDurationOrDefault("GITEA_MQ_EVENT_RETENTION", 90*24*time.Hour)
 	if err != nil {
 		return nil, err
 	}
