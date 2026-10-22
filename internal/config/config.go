@@ -42,6 +42,9 @@ type Config struct {
 	ChecksFromConfig bool
 	// AutoSetup lets gitea-mq edit branch protection and webhooks on startup.
 	AutoSetup bool
+	// MergeBranchChecks replaces the required checks on merge and batch
+	// branches (GITEA_MQ_MERGE_BRANCH_CHECKS); empty = same as the PR.
+	MergeBranchChecks []string
 }
 
 type GiteaConfig struct {
@@ -148,13 +151,8 @@ func Load() (*Config, error) {
 		}
 	}
 
-	if checks := os.Getenv("GITEA_MQ_REQUIRED_CHECKS"); checks != "" {
-		for _, c := range strings.Split(checks, ",") {
-			if c = strings.TrimSpace(c); c != "" {
-				cfg.RequiredChecks = append(cfg.RequiredChecks, c)
-			}
-		}
-	}
+	cfg.RequiredChecks = parseList(os.Getenv("GITEA_MQ_REQUIRED_CHECKS"))
+	cfg.MergeBranchChecks = parseList(os.Getenv("GITEA_MQ_MERGE_BRANCH_CHECKS"))
 
 	switch src := envOrDefault("GITEA_MQ_REQUIRED_CHECKS_SOURCE", "protection"); src {
 	case "protection":
@@ -329,6 +327,17 @@ func parseRepos(s string, kind forge.Kind) ([]forge.RepoRef, error) {
 		return nil, fmt.Errorf("no repos specified")
 	}
 	return repos, nil
+}
+
+// parseList splits a comma-separated list, dropping blanks.
+func parseList(s string) []string {
+	var out []string
+	for _, c := range strings.Split(s, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func parseInt(envKey string, defaultVal, minVal int) (int, error) {

@@ -4,6 +4,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -314,5 +315,22 @@ func TestLoad_AutoSetupAndChecksSource(t *testing.T) {
 	setEnv(t, env)
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GITEA_MQ_REQUIRED_CHECKS_SOURCE") {
 		t.Fatalf("expected invalid source error, got %v", err)
+	}
+}
+
+func TestLoad_MergeBranchChecks(t *testing.T) {
+	setEnv(t, with(map[string]string{
+		"GITEA_MQ_GITEA_URL":           "https://gitea.example.com",
+		"GITEA_MQ_GITEA_TOKEN":         "tok",
+		"GITEA_MQ_WEBHOOK_SECRET":      "sec",
+		"GITEA_MQ_REPOS":               "org/app",
+		"GITEA_MQ_MERGE_BRANCH_CHECKS": "ci / build (push), ,ci / test (push)",
+	}))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"ci / build (push)", "ci / test (push)"}; !slices.Equal(cfg.MergeBranchChecks, want) {
+		t.Fatalf("MergeBranchChecks = %q, want %q", cfg.MergeBranchChecks, want)
 	}
 }

@@ -1,6 +1,7 @@
 package gitea
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -38,6 +39,7 @@ var (
 	_ forge.Forge              = (*giteaForge)(nil)
 	_ forge.MergeStacker       = (*giteaForge)(nil)
 	_ forge.DependencyResolver = (*giteaForge)(nil)
+	_ forge.ProtectionLister   = (*giteaForge)(nil)
 )
 
 // StackMerges builds the batch branch in one clone instead of one per member.
@@ -342,4 +344,27 @@ func (f *giteaForge) OpenDependencies(ctx context.Context, owner, name string, n
 		open = append(open, d)
 	}
 	return open, nil
+}
+
+func (f *giteaForge) ListProtectedChecks(ctx context.Context, owner, name string) (map[string][]string, error) {
+	bps, err := f.client.ListBranchProtections(ctx, owner, name)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, bp := range bps {
+		if !bp.EnableStatusCheck {
+			continue
+		}
+		var checks []string
+		for _, c := range bp.StatusCheckContexts {
+			if !forge.IsOwnContext(c) {
+				checks = append(checks, c)
+			}
+		}
+		if len(checks) > 0 {
+			out[cmp.Or(bp.RuleName, bp.BranchName)] = checks
+		}
+	}
+	return out, nil
 }

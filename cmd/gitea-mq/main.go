@@ -69,6 +69,7 @@ func run() error {
 	if cfg.ChecksFromConfig && len(cfg.RequiredChecks) == 0 {
 		slog.Warn("GITEA_MQ_REQUIRED_CHECKS_SOURCE=config but GITEA_MQ_REQUIRED_CHECKS is empty: any single passing status will let a merge branch pass")
 	}
+	warnPullRequestOnlyChecks(cfg)
 
 	// Graceful shutdown context.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -131,6 +132,7 @@ func run() error {
 		CheckTimeout:        cfg.CheckTimeout,
 		FallbackChecks:      cfg.RequiredChecks,
 		ChecksFromConfig:    cfg.ChecksFromConfig,
+		MergeBranchChecks:   cfg.MergeBranchChecks,
 		SkipSetup:           !cfg.AutoSetup,
 		MergeLabel:          cfg.MergeLabel,
 		PriorityLabel:       cfg.PriorityLabel,
@@ -188,13 +190,14 @@ func run() error {
 
 	// Dashboard — uses registry for dynamic repo listing.
 	webDeps := &web.Deps{
-		Queue:            queueSvc,
-		Repos:            reg,
-		Forges:           forges,
-		FallbackChecks:   cfg.RequiredChecks,
-		ChecksFromConfig: cfg.ChecksFromConfig,
-		RefreshInterval:  int(cfg.RefreshInterval.Seconds()),
-		BasePath:         cfg.BasePath,
+		Queue:             queueSvc,
+		Repos:             reg,
+		Forges:            forges,
+		FallbackChecks:    cfg.RequiredChecks,
+		ChecksFromConfig:  cfg.ChecksFromConfig,
+		MergeBranchChecks: cfg.MergeBranchChecks,
+		RefreshInterval:   int(cfg.RefreshInterval.Seconds()),
+		BasePath:          cfg.BasePath,
 	}
 	dashMux := web.NewMux(webDeps)
 	// Mount dashboard routes — the web mux handles /, /repo/, /static/.
@@ -240,4 +243,17 @@ func run() error {
 	slog.Info("shutdown complete")
 
 	return nil
+}
+
+// warnPullRequestOnlyChecks flags configured checks that can never report on
+// a merge branch. Branch protection is checked per repo by the registry.
+func warnPullRequestOnlyChecks(cfg *config.Config) {
+	env, list := "GITEA_MQ_MERGE_BRANCH_CHECKS", cfg.MergeBranchChecks
+	if len(list) == 0 {
+		env, list = "GITEA_MQ_REQUIRED_CHECKS", cfg.RequiredChecks
+	}
+	if bad := forge.PullRequestOnlyContexts(list); len(bad) > 0 {
+		slog.Warn(env+" lists checks that only report on pull request events and never on a merge branch; "+
+			"merge-branch runs will wait for them until the check timeout", "checks", bad)
+	}
 }

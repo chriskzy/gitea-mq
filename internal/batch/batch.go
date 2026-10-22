@@ -51,7 +51,10 @@ type Engine struct {
 	FallbackChecks []string
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
-	MergeLabel       string
+	// MergeBranchChecks, when set, replaces the required checks on batch
+	// branches.
+	MergeBranchChecks []string
+	MergeLabel        string
 	// SkipIfUpToDate lands a single up-to-date PR by fast-forwarding to its
 	// head instead of building a batch branch.
 	SkipIfUpToDate bool
