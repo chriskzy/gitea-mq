@@ -244,3 +244,35 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Errorf("expected 10 repos, got %d", len(reg.List()))
 	}
 }
+
+// Non-admin tokens cannot touch branch protection or hooks; with SkipSetup
+// the registry must not even try.
+func TestAdd_SkipSetup(t *testing.T) {
+	for _, skip := range []bool{false, true} {
+		t.Run(fmt.Sprintf("skip=%v", skip), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			mock := &gitea.MockClient{}
+			forges := forge.NewSet()
+			forges.Register(gitea.NewForge(mock, "https://gitea.example.com"))
+			reg := registry.New(ctx, &registry.Deps{
+				Forges:       forges,
+				Queue:        queue.NewService(testutil.TestDB(t)),
+				ExternalURL:  "https://mq.example.com",
+				PollInterval: time.Hour,
+				CheckTimeout: time.Hour,
+				SkipSetup:    skip,
+			})
+			if err := reg.Add(ctx, giteaRef("org", "app")); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+			n := len(mock.CallsTo("ListBranchProtections")) + len(mock.CallsTo("ListWebhooks"))
+			if skip && n != 0 {
+				t.Fatalf("SkipSetup: got %d setup calls, want 0", n)
+			}
+			if !skip && n == 0 {
+				t.Fatal("setup enabled but no setup calls made")
+			}
+		})
+	}
+}

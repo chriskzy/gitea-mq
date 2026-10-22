@@ -280,3 +280,39 @@ func TestLoad_GiteaOnlyStillWorks(t *testing.T) {
 		t.Errorf("Repos() = %+v", cfg.Repos())
 	}
 }
+
+func TestLoad_AutoSetupAndChecksSource(t *testing.T) {
+	gitea := map[string]string{
+		"GITEA_MQ_GITEA_URL":      "https://gitea.example.com",
+		"GITEA_MQ_GITEA_TOKEN":    "tok",
+		"GITEA_MQ_WEBHOOK_SECRET": "sec",
+		"GITEA_MQ_REPOS":          "org/app",
+	}
+	setEnv(t, with(gitea))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoSetup || cfg.ChecksFromConfig {
+		t.Fatalf("defaults: AutoSetup=%v ChecksFromConfig=%v", cfg.AutoSetup, cfg.ChecksFromConfig)
+	}
+
+	env := with(gitea)
+	env["GITEA_MQ_AUTO_SETUP"] = "false"
+	env["GITEA_MQ_REQUIRED_CHECKS_SOURCE"] = "config"
+	env["GITEA_MQ_REQUIRED_CHECKS"] = "ci/build"
+	setEnv(t, env)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoSetup || !cfg.ChecksFromConfig {
+		t.Fatalf("overrides: AutoSetup=%v ChecksFromConfig=%v", cfg.AutoSetup, cfg.ChecksFromConfig)
+	}
+
+	env["GITEA_MQ_REQUIRED_CHECKS_SOURCE"] = "rulesets"
+	setEnv(t, env)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GITEA_MQ_REQUIRED_CHECKS_SOURCE") {
+		t.Fatalf("expected invalid source error, got %v", err)
+	}
+}

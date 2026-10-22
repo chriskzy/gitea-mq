@@ -34,7 +34,7 @@ func newTestSetup(t *testing.T) (*registry.RepoRegistry, *gitea.MockClient, cont
 }
 
 func giteaSrc(mock *gitea.MockClient) discovery.Source {
-	return discovery.Source{Kind: forge.KindGitea, List: gitea.TopicSource(mock, "merge-queue")}
+	return discovery.Source{Kind: forge.KindGitea, List: gitea.TopicSource(mock, "merge-queue", true)}
 }
 
 func TestDiscoverOnce_TopicMatching_AdminFilter(t *testing.T) {
@@ -114,5 +114,25 @@ func TestDiscoverOnce_SourceErrorIsolated(t *testing.T) {
 	}
 	if reg.Contains("github:gh/proj") {
 		t.Error("github repo not removed despite healthy empty source")
+	}
+}
+
+// Without auto-setup admin rights are not needed; push access is.
+func TestDiscoverOnce_TopicMatching_PushWithoutSetup(t *testing.T) {
+	reg, mock, ctx := newTestSetup(t)
+	mock.SearchReposByTopicFn = func(_ context.Context, _ string) ([]gitea.Repo, error) {
+		return []gitea.Repo{
+			{FullName: "org/app", Owner: gitea.RepoOwner{Login: "org"}, Name: "app", Permissions: gitea.RepoPermissions{Push: true, Pull: true}},
+			{FullName: "org/ro", Owner: gitea.RepoOwner{Login: "org"}, Name: "ro", Permissions: gitea.RepoPermissions{Pull: true}},
+		}, nil
+	}
+	src := discovery.Source{Kind: forge.KindGitea, List: gitea.TopicSource(mock, "merge-queue", false)}
+	discovery.DiscoverOnce(ctx, &discovery.Deps{Registry: reg, Sources: []discovery.Source{src}})
+
+	if !reg.Contains("gitea:org/app") {
+		t.Error("push-access repo not discovered")
+	}
+	if reg.Contains("gitea:org/ro") {
+		t.Error("read-only repo should be skipped")
 	}
 }

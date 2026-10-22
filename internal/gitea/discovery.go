@@ -7,10 +7,10 @@ import (
 	"github.com/Mic92/gitea-mq/internal/forge"
 )
 
-// TopicSource lists repos carrying the given topic that the token has admin
-// access to. Admin is required because EnsureRepoSetup mutates branch
-// protection and webhooks.
-func TopicSource(c Client, topic string) func(context.Context) ([]forge.RepoRef, error) {
+// TopicSource lists repos carrying the given topic that the token can manage.
+// With auto-setup on that means admin access, because EnsureRepoSetup mutates
+// branch protection and webhooks; without it push access is enough.
+func TopicSource(c Client, topic string, requireAdmin bool) func(context.Context) ([]forge.RepoRef, error) {
 	return func(ctx context.Context) ([]forge.RepoRef, error) {
 		repos, err := c.SearchReposByTopic(ctx, topic)
 		if err != nil {
@@ -18,8 +18,12 @@ func TopicSource(c Client, topic string) func(context.Context) ([]forge.RepoRef,
 		}
 		var out []forge.RepoRef
 		for _, r := range repos {
-			if !r.Permissions.Admin {
+			switch {
+			case requireAdmin && !r.Permissions.Admin:
 				slog.Debug("discovery: skipping repo without admin access", "repo", r.FullName)
+				continue
+			case !requireAdmin && !r.Permissions.Push && !r.Permissions.Admin:
+				slog.Debug("discovery: skipping repo without push access", "repo", r.FullName)
 				continue
 			}
 			out = append(out, forge.RepoRef{Forge: forge.KindGitea, Owner: r.Owner.Login, Name: r.Name})

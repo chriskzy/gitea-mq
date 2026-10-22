@@ -49,7 +49,9 @@ type Engine struct {
 	BisectMaxSteps int
 	CheckTimeout   time.Duration
 	FallbackChecks []string
-	MergeLabel     string
+	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
+	ChecksFromConfig bool
+	MergeLabel       string
 	// SkipIfUpToDate lands a single up-to-date PR by fast-forwarding to its
 	// head instead of building a batch branch.
 	SkipIfUpToDate bool
