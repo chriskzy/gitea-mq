@@ -67,6 +67,15 @@ let
         ExposedPorts = {
           "8080" = { };
         };
+        # Static OCI labels so locally built images are self-describing. CI
+        # adds the per-build ones (revision, created, version tag) on push.
+        Labels = {
+          "org.opencontainers.image.title" = gitea-mq.pname;
+          "org.opencontainers.image.description" = "Merge queue for Gitea and GitHub";
+          "org.opencontainers.image.version" = gitea-mq.version;
+          "org.opencontainers.image.licenses" = "MIT";
+          "org.opencontainers.image.source" = "https://github.com/Mic92/gitea-mq";
+        };
       };
     }
   ) allPlatforms;
