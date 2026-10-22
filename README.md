@@ -73,6 +73,8 @@ variables.
 | `GITEA_MQ_SKIP_QUEUE_IF_UP_TO_DATE` | no | `true` | Skip the merge-branch CI run when a PR is already rebased onto the target branch tip (its own green CI already covers the merged tree) |
 | `GITEA_MQ_REQUIRED_CHECKS` | no | - | Fallback required CI contexts when branch protection has none (comma-separated) |
 | `GITEA_MQ_MERGE_LABEL` | no | `merge-queue` | Label that enqueues a PR (stack-aware on GitHub); set to `none` to disable |
+| `GITEA_MQ_REQUIRED_APPROVALS` | no | `0` | Keep PRs out of the queue until they have this many approvals and no outstanding change request (see [Approvals](#approvals)). `0` = off |
+| `GITEA_MQ_APPROVAL_IS_INTENT` | no | `false` | An approved PR with green CI enters the queue without automerge or the merge label. Implies `GITEA_MQ_REQUIRED_APPROVALS=1` if unset |
 | `GITEA_MQ_PRIORITY_LABEL` | no | - | PRs carrying this label are tested ahead of unlabelled ones, without interrupting running tests |
 | `GITEA_MQ_LABEL_PREFIX` | no | `mq/` | Prefix of the queue state labels set on PRs (see [Queue labels](#queue-labels)); set to `none` to disable |
 | `GITEA_MQ_BATCH_MAX` | no | `1` | Max PRs tested together as one batch. `1` = batching off (legacy behaviour). `0` = everything currently queued |
@@ -115,6 +117,27 @@ prefix such as `WIP:`) are never queued, even when automerge is armed or the
 merge label is set. Their `gitea-mq` status explains why; the merge intent is
 kept, so the PR enters the queue once it is marked ready. A queued PR that is
 converted back to a draft is removed from the queue, again keeping its intent.
+
+## Approvals
+
+By default gitea-mq does not look at reviews. If branch protection requires
+approvals, an armed but unapproved PR is still tested on a merge branch; the
+forge then refuses to merge it and it holds the head of the queue until the
+success timeout removes it.
+
+`GITEA_MQ_REQUIRED_APPROVALS=N` closes that gap: a PR with merge intent is
+only queued once it has N approvals and no outstanding change request; until
+then its `gitea-mq` status reads `Waiting for approval`. A queued PR whose
+approval is dismissed, or that gets a change request, leaves the queue with
+its intent kept and re-enters once approved again. Each reviewer's latest
+review counts; dismissed reviews are ignored. On Gitea only official reviews
+(from users allowed to approve) count, and stale ones (made before the latest
+push) are ignored.
+
+`GITEA_MQ_APPROVAL_IS_INTENT=true` additionally makes approval itself the
+merge signal: an approved, non-draft PR with green CI enters the queue without
+anyone arming automerge or adding the label, and gitea-mq merges it when the
+queue passes. This costs one review lookup per open, unqueued PR per poll.
 
 ## Issue dependencies (Gitea)
 

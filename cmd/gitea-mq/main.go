@@ -63,6 +63,8 @@ func run() error {
 		"idle_poll_interval", cfg.IdlePollInterval,
 		"check_timeout", cfg.CheckTimeout,
 		"batch_max", cfg.BatchMax,
+		"required_approvals", cfg.RequiredApprovals,
+		"approval_is_intent", cfg.ApprovalIsIntent,
 	)
 
 	// Graceful shutdown context.
@@ -127,6 +129,8 @@ func run() error {
 		FallbackChecks:      cfg.RequiredChecks,
 		MergeLabel:          cfg.MergeLabel,
 		PriorityLabel:       cfg.PriorityLabel,
+		RequiredApprovals:   cfg.RequiredApprovals,
+		ApprovalIsIntent:    cfg.ApprovalIsIntent,
 		LabelPrefix:         cfg.LabelPrefix,
 		SuccessTimeout:      5 * time.Minute,
 		SkipQueueIfUpToDate: cfg.SkipQueueIfUpToDate,

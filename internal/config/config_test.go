@@ -280,3 +280,20 @@ func TestLoad_GiteaOnlyStillWorks(t *testing.T) {
 		t.Errorf("Repos() = %+v", cfg.Repos())
 	}
 }
+
+func TestLoad_ApprovalIsIntentImpliesOneApproval(t *testing.T) {
+	setEnv(t, with(map[string]string{
+		"GITEA_MQ_GITEA_URL":          "https://gitea.example.com",
+		"GITEA_MQ_GITEA_TOKEN":        "tok",
+		"GITEA_MQ_WEBHOOK_SECRET":     "sec",
+		"GITEA_MQ_REPOS":              "org/app",
+		"GITEA_MQ_APPROVAL_IS_INTENT": "true",
+	}))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ApprovalIsIntent || cfg.RequiredApprovals != 1 {
+		t.Fatalf("ApprovalIsIntent=%v RequiredApprovals=%d, want true/1", cfg.ApprovalIsIntent, cfg.RequiredApprovals)
+	}
+}
