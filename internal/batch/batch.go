@@ -141,6 +141,10 @@ func (e *Engine) FormAndBuild(ctx context.Context, targetBranch string) (*pg.Bat
 		return nil, err
 	}
 	slog.Info("batch formed", "batch", b.ID, "branch", targetBranch, "members", len(b.MemberIds))
+	e.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: e.RepoID, Kind: queue.EventBatchFormed, BatchID: b.ID, TargetBranch: targetBranch,
+		Detail: map[string]any{"members": len(b.MemberIds)},
+	})
 	return b, e.Build(ctx, b)
 }
 
@@ -186,10 +190,10 @@ func (e *Engine) Build(ctx context.Context, b *pg.Batch) error {
 			if prev != 0 {
 				msg = fmt.Sprintf("Merge conflict in batch (after #%d)", prev)
 			}
-			e.eject(ctx, b, ent, pg.CheckStateFailure, msg,
+			e.eject(ctx, b, ent, "merge_conflict", pg.CheckStateFailure, msg,
 				"❌ Removed from merge queue: "+msg+". Please rebase and re-schedule automerge.")
 		case step.Err != nil:
-			e.eject(ctx, b, ent, pg.CheckStateError, "Failed to create merge branch",
+			e.eject(ctx, b, ent, "merge_error", pg.CheckStateError, "Failed to create merge branch",
 				fmt.Sprintf("❌ Removed from merge queue: failed to create merge branch.\n\n```\n%v\n```", step.Err))
 		default:
 			surv = append(surv, *ent)
@@ -227,6 +231,10 @@ func (e *Engine) Build(ctx context.Context, b *pg.Batch) error {
 
 	slog.Info("batch built", "batch", b.ID, "build", b.Builds, "sha", tip,
 		"current", len(surv), "pending", len(loadPending(b.Pending)))
+	e.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: e.RepoID, Kind: queue.EventTestingStarted, BatchID: b.ID, TargetBranch: b.TargetBranch,
+		Detail: map[string]any{"build": b.Builds, "current": len(surv), "sha": tip},
+	})
 	return nil
 }
 
@@ -302,11 +310,11 @@ func (e *Engine) HandlePass(ctx context.Context, b *pg.Batch) error {
 				slog.Info("batch fast-forward raced; rebuilding", "batch", b.ID, "retry", b.FfRetries)
 				return e.rebuild(ctx, b)
 			}
-			e.ejectCurrent(ctx, b, pg.CheckStateError, "Target branch moved repeatedly",
+			e.ejectCurrent(ctx, b, "target_moved", pg.CheckStateError, "Target branch moved repeatedly",
 				fmt.Sprintf("⚠️ Removed from merge queue: the target branch moved during fast-forward "+
 					"%d times in a row — is something else pushing to `%s`?", MaxFFRetries, b.TargetBranch))
 		case errors.As(err, &denied):
-			e.ejectCurrent(ctx, b, pg.CheckStateError, "gitea-mq cannot push to "+b.TargetBranch,
+			e.ejectCurrent(ctx, b, "push_denied", pg.CheckStateError, "gitea-mq cannot push to "+b.TargetBranch,
 				fmt.Sprintf("⚠️ Removed from merge queue: gitea-mq is not allowed to push to `%s`.\n\n"+
 					"Add the gitea-mq user/app to the branch's push whitelist (or ruleset bypass) and re-schedule.\n\n```\n%s\n```",
 					b.TargetBranch, denied.Message))
@@ -326,6 +334,16 @@ func (e *Engine) HandlePass(ctx context.Context, b *pg.Batch) error {
 		return err
 	}
 	slog.Info("batch landed", "batch", b.ID, "sha", sha, "prs", len(entries))
+	e.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: e.RepoID, Kind: queue.EventBatchLanded, BatchID: b.ID, TargetBranch: b.TargetBranch,
+		Detail: map[string]any{"prs": len(entries), "builds": b.Builds, "sha": sha},
+	})
+	for _, ent := range entries {
+		e.Queue.RecordEvent(ctx, queue.Event{
+			RepoID: e.RepoID, Kind: queue.EventMerged, PRNumber: ent.PrNumber, BatchID: b.ID,
+			TargetBranch: b.TargetBranch, HeadSHA: ent.PrHeadSha, Reason: "batch",
+		})
+	}
 
 	desc := fmt.Sprintf("Merged via batch #%d", b.ID)
 	for _, head := range statusHeads {
@@ -358,7 +376,7 @@ func (e *Engine) HandleFail(ctx context.Context, b *pg.Batch, failedCheck, targe
 			if targetURL != "" {
 				ref = fmt.Sprintf("[%s](%s)", failedCheck, targetURL)
 			}
-			e.eject(ctx, b, &entries[0], pg.CheckStateFailure,
+			e.eject(ctx, b, &entries[0], "check_failed", pg.CheckStateFailure,
 				"Check failed: "+failedCheck,
 				"❌ Removed from merge queue: Check failed: "+ref)
 		}
@@ -373,7 +391,7 @@ func (e *Engine) HandleFail(ctx context.Context, b *pg.Batch, failedCheck, targe
 			b.CurrentIds = append(b.CurrentIds, s...)
 		}
 		b.Pending = nil
-		e.ejectCurrent(ctx, b, pg.CheckStateError,
+		e.ejectCurrent(ctx, b, "bisect_limit", pg.CheckStateError,
 			"Bisection limit reached",
 			fmt.Sprintf("⚠️ Removed from merge queue: batch bisection reached the configured limit of %d builds.", e.BisectMaxSteps))
 		return e.next(ctx, b)
@@ -390,6 +408,11 @@ func (e *Engine) HandleFail(ctx context.Context, b *pg.Batch, failedCheck, targe
 	logutil.WarnIfErr(e.Queue.ClearMergeBranch(ctx, right), "clear merge branch failed", "batch", b.ID)
 	slog.Info("batch bisecting", "batch", b.ID, "build", b.Builds,
 		"failed_check", failedCheck, "left", len(left), "right", len(right))
+	e.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: e.RepoID, Kind: queue.EventBatchBisected, BatchID: b.ID, TargetBranch: b.TargetBranch,
+		Reason: "check_failed",
+		Detail: map[string]any{"build": b.Builds, "check": failedCheck, "left": len(left), "right": len(right)},
+	})
 	return e.rebuild(ctx, b)
 }
 
@@ -583,7 +606,7 @@ func (e *Engine) next(ctx context.Context, b *pg.Batch) error {
 }
 
 // eject marks a single member for removal: status, cancel automerge, comment.
-func (e *Engine) eject(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, state pg.CheckState, statusDesc, comment string) {
+func (e *Engine) eject(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, reason string, state pg.CheckState, statusDesc, comment string) {
 	logutil.WarnIfErr(e.Forge.SetMQStatus(ctx, e.Owner, e.Repo, ent.PrHeadSha, forge.MQStatus{
 		State: state, Description: statusDesc, TargetURL: e.prURL(ent.PrNumber),
 	}), "set mq status failed", "pr", ent.PrNumber)
@@ -592,12 +615,17 @@ func (e *Engine) eject(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, sta
 	logutil.WarnIfErr(e.Forge.Comment(ctx, e.Owner, e.Repo, ent.PrNumber, comment), "post comment failed", "pr", ent.PrNumber)
 	// The next SaveBatch deletes EjectedIds from the queue.
 	b.EjectedIds = append(b.EjectedIds, ent.ID)
+	e.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: e.RepoID, Kind: queue.EventEjected, PRNumber: ent.PrNumber, BatchID: b.ID,
+		TargetBranch: b.TargetBranch, HeadSHA: ent.PrHeadSha, Reason: reason,
+		Detail: map[string]any{"status": statusDesc},
+	})
 }
 
-func (e *Engine) ejectCurrent(ctx context.Context, b *pg.Batch, state pg.CheckState, statusDesc, comment string) {
+func (e *Engine) ejectCurrent(ctx context.Context, b *pg.Batch, reason string, state pg.CheckState, statusDesc, comment string) {
 	entries, _ := e.Queue.GetEntriesByIDs(ctx, b.CurrentIds)
 	for i := range entries {
-		e.eject(ctx, b, &entries[i], state, statusDesc, comment)
+		e.eject(ctx, b, &entries[i], reason, state, statusDesc, comment)
 	}
 	b.CurrentIds = nil
 }

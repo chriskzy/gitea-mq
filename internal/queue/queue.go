@@ -24,7 +24,8 @@ type EnqueueResult struct {
 
 // Service provides merge queue operations backed by the database.
 type Service struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	events eventState
 }
 
 // NewService creates a new queue service.
@@ -201,11 +202,15 @@ func (s *Service) ListActiveEntries(ctx context.Context, repoID int64) ([]pg.Que
 
 // GetOrCreateRepo ensures a repo row exists and returns it.
 func (s *Service) GetOrCreateRepo(ctx context.Context, forge, owner, name string) (pg.Repo, error) {
-	return s.queries().GetOrCreateRepo(ctx, pg.GetOrCreateRepoParams{
+	r, err := s.queries().GetOrCreateRepo(ctx, pg.GetOrCreateRepoParams{
 		Forge: forge,
 		Owner: owner,
 		Name:  name,
 	})
+	if err == nil {
+		s.rememberRepo(r)
+	}
+	return r, err
 }
 
 // DequeueAll removes all queue entries for a repo. Used when a repo is

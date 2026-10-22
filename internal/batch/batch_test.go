@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -244,6 +245,23 @@ func TestBisect_CulpritAt2(t *testing.T) {
 	// Status discipline: 4 pending (build 1) + 4 terminal = 8.
 	if got := len(f.CallsTo("SetMQStatus")); got != 8 {
 		t.Fatalf("SetMQStatus calls = %d, want 8", got)
+	}
+
+	// The event log makes the bisection cost measurable.
+	evs, err := svc.ListEvents(ctx, queue.EventFilter{RepoID: e.RepoID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]int{}
+	for _, ev := range evs {
+		kinds[ev.Kind]++
+		if ev.Kind == string(queue.EventEjected) && (ev.PrNumber.Int64 != 20 || ev.Reason != "check_failed") {
+			t.Errorf("unexpected ejection %+v", ev)
+		}
+	}
+	want := map[string]int{"batch_formed": 1, "testing_started": 5, "batch_bisected": 2, "batch_landed": 2, "merged": 3, "ejected": 1}
+	if !maps.Equal(kinds, want) {
+		t.Fatalf("event kinds = %v, want %v", kinds, want)
 	}
 }
 
