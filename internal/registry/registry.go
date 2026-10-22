@@ -49,6 +49,9 @@ type Deps struct {
 	// SkipSetup disables EnsureRepoSetup (branch protection and webhook
 	// edits), for tokens without repo admin rights.
 	SkipSetup bool
+	// RequiredApprovals and ApprovalIsIntent: see poller.Deps.
+	RequiredApprovals int
+	ApprovalIsIntent  bool
 }
 
 // RepoRegistry manages the set of active repos. Thread-safe for concurrent
@@ -188,6 +191,8 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		ChecksFromConfig:    r.deps.ChecksFromConfig,
 		MergeLabel:          r.deps.MergeLabel,
 		PriorityLabel:       r.deps.PriorityLabel,
+		RequiredApprovals:   r.deps.RequiredApprovals,
+		ApprovalIsIntent:    r.deps.ApprovalIsIntent,
 		LabelPrefix:         r.deps.LabelPrefix,
 		SuccessTimeout:      r.deps.SuccessTimeout,
 		CheckTimeout:        r.deps.CheckTimeout,

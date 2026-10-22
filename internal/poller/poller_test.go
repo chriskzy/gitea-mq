@@ -794,3 +794,129 @@ func TestPollOnce_DraftNotEnqueued(t *testing.T) {
 		t.Fatalf("ready PR not enqueued: %v", result.Enqueued)
 	}
 }
+
+func approvedBy(users ...string) func(context.Context, string, string, int64) ([]gitea.PRReview, error) {
+	return func(context.Context, string, string, int64) ([]gitea.PRReview, error) {
+		var out []gitea.PRReview
+		for i, u := range users {
+			out = append(out, gitea.PRReview{ID: int64(i + 1), User: &gitea.User{Login: u}, State: "APPROVED", Official: true})
+		}
+		return out, nil
+	}
+}
+
+func mergeOK(mock *gitea.MockClient) {
+	mock.MergeBranchesFn = func(_ context.Context, _, _, _, _, _ string) (*gitea.MergeResult, error) {
+		return &gitea.MergeResult{SHA: "merge-sha"}, nil
+	}
+}
+
+// An armed PR without approval must not be tested: the forge would refuse
+// the merge and the PR would hold the head of the queue until timeout.
+func TestPollOnce_RequiredApprovals_GatesEnqueue(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	deps.RequiredApprovals = 1
+	mockAutomergePRs(mock, makePR(42, "sha42", "main"))
+	mergeOK(mock)
+
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := svc.GetEntry(ctx, repoID, 42); e != nil {
+		t.Fatalf("unapproved PR enqueued: %+v", e)
+	}
+	if n := len(mock.CallsTo("MergeBranches")); n != 0 {
+		t.Fatalf("merge branch built for unapproved PR")
+	}
+	calls := mock.CallsTo("CreateCommitStatus")
+	if len(calls) != 1 || !strings.Contains(calls[0].Args[3].(gitea.CommitStatus).Description, "Waiting for approval (0/1)") {
+		t.Fatalf("expected one waiting-for-approval status, got %v", calls)
+	}
+
+	mock.ListPRReviewsFn = approvedBy("alice")
+	result, err := poller.PollOnce(ctx, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Enqueued) != 1 {
+		t.Fatalf("approved PR not enqueued: %+v", result)
+	}
+}
+
+func TestPollOnce_RequiredApprovals_RemovesOnChangesRequested(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	deps.RequiredApprovals = 1
+	if _, err := svc.Enqueue(ctx, repoID, 42, "sha42", "main", false); err != nil {
+		t.Fatal(err)
+	}
+	mockAutomergePRs(mock, makePR(42, "sha42", "main"))
+	mock.ListPRReviewsFn = func(context.Context, string, string, int64) ([]gitea.PRReview, error) {
+		return []gitea.PRReview{
+			{ID: 1, User: &gitea.User{Login: "alice"}, State: "APPROVED", Official: true},
+			{ID: 2, User: &gitea.User{Login: "bob"}, State: "REQUEST_CHANGES", Official: true},
+		}, nil
+	}
+
+	result, err := poller.PollOnce(ctx, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Dequeued) != 1 || len(result.Advanced) != 1 {
+		t.Fatalf("expected PR removed and queue advanced, got %+v", result)
+	}
+	if n := len(mock.CallsTo("CancelAutoMerge")); n != 0 {
+		t.Fatalf("intent must be kept, got %d CancelAutoMerge", n)
+	}
+	if n := len(mock.CallsTo("CreateComment")); n != 1 {
+		t.Fatalf("expected one comment, got %d", n)
+	}
+}
+
+// With approval as intent, approval alone queues the PR and gitea-mq merges
+// it itself; unapproved PRs are left alone without any status.
+func TestPollOnce_ApprovalIsIntent(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	deps.RequiredApprovals = 1
+	deps.ApprovalIsIntent = true
+	mergeOK(mock)
+	mock.ListOpenPRsFn = func(context.Context, string, string) ([]gitea.PR, error) {
+		return []gitea.PR{makePR(42, "sha42", "main"), makePR(43, "sha43", "main")}, nil
+	}
+	mock.ListPRReviewsFn = func(_ context.Context, _, _ string, n int64) ([]gitea.PRReview, error) {
+		if n == 42 {
+			return approvedBy("alice")(ctx, "", "", n)
+		}
+		return nil, nil
+	}
+
+	result, err := poller.PollOnce(ctx, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Enqueued) != 1 || result.Enqueued[0] != 42 {
+		t.Fatalf("expected only #42 enqueued, got %v (%v)", result.Enqueued, result.Errors)
+	}
+	for _, c := range mock.CallsTo("CreateCommitStatus") {
+		if c.Args[2].(string) == "sha43" {
+			t.Fatalf("status posted on unapproved PR without intent: %+v", c.Args[3])
+		}
+	}
+
+	// Queue passes: gitea-mq must merge since nothing armed automerge.
+	if err := svc.UpdateState(ctx, repoID, 42, pg.EntryStateSuccess); err != nil {
+		t.Fatal(err)
+	}
+	mock.GetPRFn = func(context.Context, string, string, int64) (*gitea.PR, error) {
+		pr := makePR(42, "sha42", "main")
+		return &pr, nil
+	}
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mock.CallsTo("MergePR")); n != 1 {
+		t.Fatalf("expected MergePR for approval-intent PR, got %d", n)
+	}
+	if e, _ := svc.GetEntry(ctx, repoID, 42); e == nil {
+		t.Fatal("approved PR was removed as cancelled")
+	}
+}

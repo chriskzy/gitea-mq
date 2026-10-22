@@ -67,6 +67,8 @@ func run() error {
 		"batch_max", cfg.BatchMax,
 		"auto_setup", cfg.AutoSetup,
 		"checks_from_config", cfg.ChecksFromConfig,
+		"required_approvals", cfg.RequiredApprovals,
+		"approval_is_intent", cfg.ApprovalIsIntent,
 	)
 	if cfg.ChecksFromConfig && len(cfg.RequiredChecks) == 0 {
 		slog.Warn("GITEA_MQ_REQUIRED_CHECKS_SOURCE=config but GITEA_MQ_REQUIRED_CHECKS is empty: any single passing status will let a merge branch pass")
@@ -146,6 +148,8 @@ func run() error {
 		SkipSetup:           !cfg.AutoSetup,
 		MergeLabel:          cfg.MergeLabel,
 		PriorityLabel:       cfg.PriorityLabel,
+		RequiredApprovals:   cfg.RequiredApprovals,
+		ApprovalIsIntent:    cfg.ApprovalIsIntent,
 		LabelPrefix:         cfg.LabelPrefix,
 		SuccessTimeout:      5 * time.Minute,
 		SkipQueueIfUpToDate: cfg.SkipQueueIfUpToDate,

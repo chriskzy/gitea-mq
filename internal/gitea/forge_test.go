@@ -284,3 +284,29 @@ func TestForge_Capabilities(t *testing.T) {
 		})
 	}
 }
+
+func TestGetReviews_LatestOfficialPerUser(t *testing.T) {
+	mock := &gitea.MockClient{}
+	mock.ListPRReviewsFn = func(context.Context, string, string, int64) ([]gitea.PRReview, error) {
+		u := func(l string) *gitea.User { return &gitea.User{Login: l} }
+		return []gitea.PRReview{
+			{User: u("alice"), State: "REQUEST_CHANGES", Official: true},
+			{User: u("alice"), State: "APPROVED", Official: true}, // supersedes
+			{User: u("bob"), State: "APPROVED", Official: true, Stale: true},
+			{User: u("carol"), State: "APPROVED", Official: false},
+			{User: u("dave"), State: "REQUEST_CHANGES", Official: true, Dismissed: true},
+			{User: u("erin"), State: "COMMENT", Official: true},
+		}, nil
+	}
+	f := gitea.NewForge(mock, "https://gitea.example.com")
+	rv, err := forge.GetReviews(context.Background(), f, "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rv.Approvals != 1 || rv.ChangesRequested {
+		t.Fatalf("got %+v, want 1 approval and no change request", rv)
+	}
+	if !rv.Approved(1) || rv.Approved(2) {
+		t.Fatalf("Approved(): %+v", rv)
+	}
+}
