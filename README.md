@@ -265,8 +265,16 @@ allows a merge. It resolves this in order:
 
 A small web dashboard shows queue status across all managed repos, lets you
 drill into individual repos to see queued PRs, and inspect check results per
-PR. It auto-refreshes without JavaScript. There is also a `/healthz` endpoint
-for monitoring.
+PR. It auto-refreshes without JavaScript.
+
+For monitoring there are two endpoints:
+
+- `/healthz` (liveness): `200 ok` whenever the process serves HTTP.
+- `/readyz` (readiness): `200` only when PostgreSQL answers a ping and every
+  configured forge accepts gitea-mq's credentials (Gitea: `GET /user` with the
+  token; GitHub: `GET /app` with the App JWT), `503` otherwise. The JSON body
+  names each check, e.g. `{"status":"unavailable","checks":{"database":"ok","gitea":"401 ..."}}`.
+  Results are cached for 10s so frequent probes do not add forge traffic.
 
 Repo and PR pages live under `/repo/{forge}/{owner}/{name}` (e.g.
 `/repo/github/org/app/pr/42`). Paths without the forge segment resolve as Gitea
