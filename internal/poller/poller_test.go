@@ -669,3 +669,38 @@ func TestRun_TriggerPollsIdleRepo(t *testing.T) {
 		t.Fatalf("triggered idle repo polled forge %d times, want 2", listed)
 	}
 }
+
+// With ChecksFromConfig the poller must gate on the configured list and never
+// read branch protection, which Gitea only exposes to repo admins.
+func TestPollOnce_ChecksFromConfig(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	deps.ChecksFromConfig = true
+	deps.FallbackChecks = []string{"ci/build"}
+	mock.GetBranchProtectionFn = func(_ context.Context, _, _, _ string) (*gitea.BranchProtection, error) {
+		t.Fatal("branch protection read with ChecksFromConfig")
+		return nil, nil
+	}
+	mockAutomergePRs(mock, makePR(42, "sha42", "main"))
+	mock.MergeBranchesFn = func(_ context.Context, _, _, _, _, _ string) (*gitea.MergeResult, error) {
+		return &gitea.MergeResult{SHA: "merge-sha"}, nil
+	}
+
+	state := "pending"
+	mock.GetCombinedCommitStatusFn = func(_ context.Context, _, _, _ string) (*gitea.CombinedStatus, error) {
+		return &gitea.CombinedStatus{Statuses: []gitea.CommitStatusResult{{Context: "ci/build", Status: state}}}, nil
+	}
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := svc.GetEntry(ctx, repoID, 42); e != nil {
+		t.Fatalf("enqueued with configured check pending: %+v", e)
+	}
+
+	state = "success"
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := svc.GetEntry(ctx, repoID, 42); e == nil {
+		t.Fatal("not enqueued once configured check passed")
+	}
+}

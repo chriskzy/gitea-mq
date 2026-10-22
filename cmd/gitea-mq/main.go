@@ -63,7 +63,12 @@ func run() error {
 		"idle_poll_interval", cfg.IdlePollInterval,
 		"check_timeout", cfg.CheckTimeout,
 		"batch_max", cfg.BatchMax,
+		"auto_setup", cfg.AutoSetup,
+		"checks_from_config", cfg.ChecksFromConfig,
 	)
+	if cfg.ChecksFromConfig && len(cfg.RequiredChecks) == 0 {
+		slog.Warn("GITEA_MQ_REQUIRED_CHECKS_SOURCE=config but GITEA_MQ_REQUIRED_CHECKS is empty: any single passing status will let a merge branch pass")
+	}
 
 	// Graceful shutdown context.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -90,7 +95,7 @@ func run() error {
 		if cfg.Gitea.Topic != "" {
 			discSources = append(discSources, discovery.Source{
 				Kind: forge.KindGitea,
-				List: gitea.TopicSource(giteaClient, cfg.Gitea.Topic),
+				List: gitea.TopicSource(giteaClient, cfg.Gitea.Topic, cfg.AutoSetup),
 			})
 		}
 	}
@@ -125,6 +130,8 @@ func run() error {
 		IdlePollInterval:    cfg.IdlePollInterval,
 		CheckTimeout:        cfg.CheckTimeout,
 		FallbackChecks:      cfg.RequiredChecks,
+		ChecksFromConfig:    cfg.ChecksFromConfig,
+		SkipSetup:           !cfg.AutoSetup,
 		MergeLabel:          cfg.MergeLabel,
 		PriorityLabel:       cfg.PriorityLabel,
 		LabelPrefix:         cfg.LabelPrefix,
@@ -181,12 +188,13 @@ func run() error {
 
 	// Dashboard — uses registry for dynamic repo listing.
 	webDeps := &web.Deps{
-		Queue:           queueSvc,
-		Repos:           reg,
-		Forges:          forges,
-		FallbackChecks:  cfg.RequiredChecks,
-		RefreshInterval: int(cfg.RefreshInterval.Seconds()),
-		BasePath:        cfg.BasePath,
+		Queue:            queueSvc,
+		Repos:            reg,
+		Forges:           forges,
+		FallbackChecks:   cfg.RequiredChecks,
+		ChecksFromConfig: cfg.ChecksFromConfig,
+		RefreshInterval:  int(cfg.RefreshInterval.Seconds()),
+		BasePath:         cfg.BasePath,
 	}
 	dashMux := web.NewMux(webDeps)
 	// Mount dashboard routes — the web mux handles /, /repo/, /static/.

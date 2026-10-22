@@ -37,6 +37,11 @@ type Config struct {
 	LogLevel            string
 	// CacheDir holds persistent bare git clones used for merge operations.
 	CacheDir string
+	// ChecksFromConfig uses RequiredChecks only and never reads branch
+	// protection (GITEA_MQ_REQUIRED_CHECKS_SOURCE=config).
+	ChecksFromConfig bool
+	// AutoSetup lets gitea-mq edit branch protection and webhooks on startup.
+	AutoSetup bool
 }
 
 type GiteaConfig struct {
@@ -149,6 +154,19 @@ func Load() (*Config, error) {
 				cfg.RequiredChecks = append(cfg.RequiredChecks, c)
 			}
 		}
+	}
+
+	switch src := envOrDefault("GITEA_MQ_REQUIRED_CHECKS_SOURCE", "protection"); src {
+	case "protection":
+	case "config":
+		cfg.ChecksFromConfig = true
+	default:
+		return nil, fmt.Errorf("GITEA_MQ_REQUIRED_CHECKS_SOURCE: invalid value %q, must be one of: protection, config", src)
+	}
+
+	cfg.AutoSetup, err = parseBool("GITEA_MQ_AUTO_SETUP", true)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg.MergeLabel = envOrDefault("GITEA_MQ_MERGE_LABEL", "merge-queue")
