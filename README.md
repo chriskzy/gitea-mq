@@ -79,6 +79,8 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_CHECK_TIMEOUT` | no | `1h` | Timeout for required checks |
 | `GITEA_MQ_SKIP_QUEUE_IF_UP_TO_DATE` | no | `true` | Skip the merge-branch CI run when a PR is already rebased onto the target branch tip (its own green CI already covers the merged tree) |
 | `GITEA_MQ_REQUIRED_CHECKS` | no | - | Fallback required CI contexts when branch protection has none (comma-separated) |
+| `GITEA_MQ_PR_REQUIRED_CHECKS` | no | unset | Checks the PR head must pass before it is queued, instead of protection / `GITEA_MQ_REQUIRED_CHECKS`. Set to an empty value to not gate the PR head on CI. See [CI configuration](#ci-configuration) |
+| `GITEA_MQ_MERGE_REQUIRED_CHECKS` | no | unset | Checks required on `gitea-mq/*` merge and batch branches, instead of protection / `GITEA_MQ_REQUIRED_CHECKS` |
 | `GITEA_MQ_REQUIRED_CHECKS_SOURCE` | no | `protection` | `protection`: read required checks from branch protection, falling back to `GITEA_MQ_REQUIRED_CHECKS`. `config`: use `GITEA_MQ_REQUIRED_CHECKS` only and never read branch protection (see [Running without admin rights](#running-without-admin-rights)) |
 | `GITEA_MQ_AUTO_SETUP` | no | `true` | Configure branch protection and webhooks on startup (see [Auto-setup](#auto-setup)) |
 | `GITEA_MQ_MERGE_LABEL` | no | `merge-queue` | Label that enqueues a PR (stack-aware on GitHub); set to `none` to disable |
@@ -375,6 +377,25 @@ allows a merge. It resolves this in order:
 3. Any single success. If neither is configured, any single passing commit
    status on the merge branch is enough.
 
+By default that one list gates two different commits: the PR head (before a
+PR is queued) and the merge branch. That breaks when a required check cannot
+report on both. Gitea/Forgejo Actions name statuses after the triggering
+event, e.g. `ci / build (pull_request)` on the PR and `ci / build (push)` on
+`gitea-mq/42`, so a merge branch never receives the `(pull_request)` context
+and every run waits until `GITEA_MQ_CHECK_TIMEOUT`. Set the two lists
+separately instead of relying on a glob:
+
+```bash
+GITEA_MQ_PR_REQUIRED_CHECKS="ci / build (pull_request)"
+GITEA_MQ_MERGE_REQUIRED_CHECKS="ci / build (push)"
+```
+
+Each list, when set, replaces protection and `GITEA_MQ_REQUIRED_CHECKS` for
+its commit. An empty `GITEA_MQ_PR_REQUIRED_CHECKS=` means the PR head is not
+gated on CI and the merge-branch run is the only CI gate. On startup gitea-mq
+warns about any `(pull_request…)` context that a merge branch would wait for,
+whether it comes from branch protection or the configured lists.
+
 ## Dashboard
 
 A small web dashboard shows queue status across all managed repos, lets you
@@ -487,6 +508,8 @@ Real-world deployments:
 | `checkTimeout` | string | `1h` | Check timeout |
 | `skipQueueIfUpToDate` | bool | `true` | Skip merge-branch CI for PRs already rebased onto the target tip |
 | `requiredChecks` | list of strings | `[]` | Fallback required CI contexts when branch protection has none |
+| `prRequiredChecks` | null or list of strings | `null` | Checks the PR head must pass before queueing; `[]` = no PR-head gate |
+| `mergeRequiredChecks` | null or list of strings | `null` | Checks required on merge and batch branches |
 | `requiredChecksSource` | enum | `"protection"` | `"config"` uses `requiredChecks` only and never reads branch protection |
 | `autoSetup` | bool | `true` | Configure branch protection and webhooks on startup |
 | `refreshInterval` | string | `10s` | Dashboard refresh interval |

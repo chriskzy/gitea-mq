@@ -51,7 +51,10 @@ type Engine struct {
 	FallbackChecks []string
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
-	MergeLabel       string
+	// MergeChecks, when non-nil, replaces the required checks on batch
+	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
+	MergeChecks *[]string
+	MergeLabel  string
 	// Approval is re-checked right before landing: an approval dismissed
 	// while the batch tested must not be fast-forwarded past.
 	Approval forge.ApprovalPolicy
