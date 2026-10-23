@@ -51,6 +51,14 @@ type Config struct {
 	// then RequiredChecks); a non-nil empty list = no checks.
 	PRRequiredChecks    *[]string
 	MergeRequiredChecks *[]string
+	// RequireApproval keeps PRs out of the queue until approved.
+	RequireApproval bool
+	// RequiredApprovals is how many approvals are needed; 0 = from branch
+	// protection when readable, else 1.
+	RequiredApprovals int
+	// EnqueueOnApproval lets an approved PR enter the queue without
+	// automerge or the merge label. Implies RequireApproval.
+	EnqueueOnApproval bool
 }
 
 type GiteaConfig struct {
@@ -213,6 +221,22 @@ func Load() (*Config, error) {
 	cfg.EventRetention, err = parseDurationOrDefault("GITEA_MQ_EVENT_RETENTION", 90*24*time.Hour)
 	if err != nil {
 		return nil, err
+	}
+	cfg.RequireApproval, err = parseBool("GITEA_MQ_REQUIRE_APPROVAL", false)
+	if err != nil {
+		return nil, err
+	}
+	cfg.RequiredApprovals, err = parseInt("GITEA_MQ_REQUIRED_APPROVALS", 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	cfg.EnqueueOnApproval, err = parseBool("GITEA_MQ_ENQUEUE_ON_APPROVAL", false)
+	if err != nil {
+		return nil, err
+	}
+	// Approval as intent only makes sense when approval is checked.
+	if cfg.EnqueueOnApproval {
+		cfg.RequireApproval = true
 	}
 
 	cfg.CacheDir = os.Getenv("GITEA_MQ_CACHE_DIR")

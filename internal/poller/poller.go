@@ -45,6 +45,9 @@ type Deps struct {
 	MergeLabel string
 	// PriorityLabel sorts queued PRs carrying it ahead of others; empty disables.
 	PriorityLabel string
+	// Approval holds PRs back until approved and, with OnApproval, treats
+	// approval as merge intent so neither automerge nor the label is needed.
+	Approval forge.ApprovalPolicy
 	// SuccessTimeout is how long a PR may sit in "success" without merging
 	// before we assume the forge's auto-merge failed.
 	SuccessTimeout time.Duration
@@ -215,6 +218,7 @@ func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 
 	enqueueAutoMergePRs(ctx, deps, result, openPRs)
 	enqueueLabeledPRs(ctx, deps, result, openPRs)
+	enqueueApprovedPRs(ctx, deps, result, openPRs)
 	hintStackedPRs(ctx, deps, openPRs)
 	reconcileEntries(ctx, deps, result, openPRMap)
 	startQueuedHeads(ctx, deps, result)
@@ -372,6 +376,12 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 		return
 	}
 
+	// An unapproved PR would pass the merge branch and then be refused by
+	// the forge, holding the head of the queue until the success timeout.
+	if source != sourceApproval && !approvalGate(ctx, deps, result, pr) {
+		return
+	}
+
 	// Batches fast-forward the target, which skips the forge's dependency
 	// check. Merge intent stays, so the PR is picked up once they close.
 	blockers, err := forge.OpenDependencies(ctx, deps.Forge, deps.Owner, deps.Repo, pr.Number)
@@ -411,6 +421,62 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 
 		result.Enqueued = append(result.Enqueued, pr.Number)
 		slog.Info("enqueued PR from "+source, "pr", pr.Number, "position", enqResult.Position)
+	}
+}
+
+// sourceApproval marks enqueues triggered by Approval.OnApproval, whose
+// reviews were already checked.
+const sourceApproval = "approval"
+
+// approvalGate reports whether pr has the required approvals, posting a
+// waiting status when it does not. Always true when approvals are not
+// required.
+func approvalGate(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR) bool {
+	ok, rv, needed, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, pr.BaseBranch, pr.Number)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("get reviews of PR #%d: %w", pr.Number, err))
+		return false
+	}
+	if ok {
+		return true
+	}
+	desc := fmt.Sprintf("Waiting for approval (%d/%d)", rv.Approvals, needed)
+	if rv.ChangesRequested {
+		desc = "Changes requested: waiting for approval"
+	}
+	markWaiting(ctx, deps, pr.Number, pr.HeadSHA, desc)
+	return false
+}
+
+// enqueueApprovedPRs adds approved PRs without automerge or the merge label
+// when approval counts as merge intent. Reviews are checked before CI so the
+// common case (an open, unapproved PR) costs one request and posts nothing.
+func enqueueApprovedPRs(ctx context.Context, deps *Deps, result *PollResult, openPRs []forge.PR) {
+	if !deps.Approval.OnApproval {
+		return
+	}
+	for i := range openPRs {
+		pr := &openPRs[i]
+		if pr.Draft || pr.AutoMergeEnabled || pr.HasLabel(deps.MergeLabel) {
+			continue
+		}
+		existing, err := deps.Queue.GetEntry(ctx, deps.RepoID, pr.Number)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("check queue for PR #%d: %w", pr.Number, err))
+			continue
+		}
+		if existing != nil {
+			continue
+		}
+		ok, _, _, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, pr.BaseBranch, pr.Number)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("get reviews of PR #%d: %w", pr.Number, err))
+			continue
+		}
+		if !ok {
+			continue
+		}
+		enqueuePR(ctx, deps, result, pr, pr.BaseBranch, sourceApproval)
 	}
 }
 
@@ -507,11 +573,15 @@ func hintStackedPRs(ctx context.Context, deps *Deps, openPRs []forge.PR) {
 	}
 }
 
-// finalizeLabeledMerge merges label-triggered entries in "success" via the
-// forge, since no automerge is armed for them. Legacy (non-batch) path only;
-// the batch engine lands entries itself.
+// finalizeLabeledMerge merges label- and approval-triggered entries in
+// "success" via the forge, since no automerge is armed for them. Legacy
+// (non-batch) path only; the batch engine lands entries itself.
 func finalizeLabeledMerge(ctx context.Context, deps *Deps, result *PollResult, entry *pg.QueueEntry, pr *forge.PR) {
-	if deps.MergeLabel == "" || entry.State != pg.EntryStateSuccess || pr == nil || pr.Merged || !pr.HasLabel(deps.MergeLabel) {
+	if entry.State != pg.EntryStateSuccess || pr == nil || pr.Merged {
+		return
+	}
+	labeled := deps.MergeLabel != "" && pr.HasLabel(deps.MergeLabel)
+	if !labeled && (!deps.Approval.OnApproval || pr.AutoMergeEnabled) {
 		return
 	}
 
@@ -560,6 +630,17 @@ func reconcileEntries(ctx context.Context, deps *Deps, result *PollResult, openP
 		}
 
 		labeled := deps.MergeLabel != "" && pr.HasLabel(deps.MergeLabel)
+		// A failed review lookup counts as approved so a transient error
+		// never ejects a PR.
+		approved := true
+		if isOpen && deps.Approval.Require {
+			if ok, _, _, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, entry.TargetBranch, pr.Number); err != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("get reviews of PR #%d: %w", pr.Number, err))
+			} else {
+				approved = ok
+			}
+		}
+		approvalIntent := deps.Approval.OnApproval && approved
 		retargeted := pr.BaseBranch != "" && pr.BaseBranch != entry.TargetBranch
 		if retargeted && labeled {
 			if target, err := labeledTargetBranch(ctx, deps, pr); err == nil && target == entry.TargetBranch {
@@ -603,7 +684,7 @@ func reconcileEntries(ctx context.Context, deps *Deps, result *PollResult, openP
 				},
 			},
 			{
-				when:  !pr.AutoMergeEnabled && !labeled,
+				when:  !pr.AutoMergeEnabled && !labeled && !approvalIntent,
 				label: "cancelled",
 				opts:  removeOpts{logMsg: "removed PR due to merge intent cancellation"},
 			},
@@ -615,6 +696,16 @@ func reconcileEntries(ctx context.Context, deps *Deps, result *PollResult, openP
 					comment: "⏸️ Removed from merge queue: this PR was converted to a draft. The merge stays scheduled: the PR re-enters the queue once it is marked ready for review.",
 					advance: true,
 					logMsg:  "removed PR converted to draft",
+				},
+			},
+			{
+				// Intent is kept: the PR re-enters once approved again.
+				when:  isOpen && !approved,
+				label: "unapproved",
+				opts: removeOpts{
+					comment: batch.UnapprovedComment,
+					advance: true,
+					logMsg:  "removed PR that lost its approval",
 				},
 			},
 		}

@@ -90,6 +90,7 @@ type BranchProtection struct {
 	RuleName            string   `json:"rule_name"`
 	EnableStatusCheck   bool     `json:"enable_status_check"`
 	StatusCheckContexts []string `json:"status_check_contexts"`
+	RequiredApprovals   int      `json:"required_approvals"`
 }
 
 // Compare is the response from GET /repos/{owner}/{repo}/compare/{base}...{head}.
@@ -289,6 +290,10 @@ type Client interface {
 	// GET /repos/{owner}/{repo}/issues/{index}/dependencies
 	ListIssueDependencies(ctx context.Context, owner, repo string, index int64) ([]Issue, error)
 
+	// ListPRReviews returns all reviews on a PR, oldest first.
+	// GET /repos/{owner}/{repo}/pulls/{index}/reviews
+	ListPRReviews(ctx context.Context, owner, repo string, index int64) ([]PRReview, error)
+
 	// ServerVersion returns the Gitea/Forgejo server version string.
 	// GET /version
 	ServerVersion(ctx context.Context) (string, error)
@@ -296,6 +301,19 @@ type Client interface {
 	// IsForgejo reports whether the server is a Forgejo instance.
 	// GET /api/forgejo/v1/version (200 on Forgejo, 404 on Gitea)
 	IsForgejo(ctx context.Context) (bool, error)
+}
+
+// PRReview is the subset of a pull request review we need.
+type PRReview struct {
+	ID    int64  `json:"id"`
+	User  *User  `json:"user"`
+	State string `json:"state"` // APPROVED, REQUEST_CHANGES, COMMENT, PENDING, REQUEST_REVIEW
+	// Official is set when the reviewer counts towards branch protection's
+	// required approvals.
+	Official  bool `json:"official"`
+	Dismissed bool `json:"dismissed"`
+	// Stale is set when new commits were pushed after the review.
+	Stale bool `json:"stale"`
 }
 
 // Issue is the subset of an issue or PR returned by the dependencies endpoint.
