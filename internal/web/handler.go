@@ -178,8 +178,11 @@ type Deps struct {
 	FallbackChecks []string // from GITEA_MQ_REQUIRED_CHECKS
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
-	RefreshInterval  int // seconds
-	BasePath         string
+	// MergeChecks, when non-nil, replaces the required checks on merge
+	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
+	MergeChecks     *[]string
+	RefreshInterval int // seconds
+	BasePath        string
 }
 
 // NewMux creates an http.ServeMux with the dashboard routes registered.
@@ -463,7 +466,7 @@ func servePRDetail(w http.ResponseWriter, r *http.Request, deps *Deps, ref forge
 
 		var required []string
 		if f != nil {
-			required, err = monitor.ResolveRequiredChecks(ctx, f, owner, name, entry.TargetBranch, deps.FallbackChecks, deps.ChecksFromConfig)
+			required, err = monitor.ResolveCheckList(ctx, f, owner, name, entry.TargetBranch, deps.MergeChecks, deps.FallbackChecks, deps.ChecksFromConfig)
 			if err != nil {
 				slog.Warn("failed to resolve required checks", "pr", prNumber, "error", err)
 			}

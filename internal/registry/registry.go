@@ -46,6 +46,9 @@ type Deps struct {
 	BisectMaxSteps      int
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
+	// PRChecks and MergeChecks: see poller.Deps.
+	PRChecks    *[]string
+	MergeChecks *[]string
 	// SkipSetup disables EnsureRepoSetup (branch protection and webhook
 	// edits), for tokens without repo admin rights.
 	SkipSetup bool
@@ -99,6 +102,8 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		}
 	}
 
+	r.warnUnreportableChecks(ctx, f, key, ref)
+
 	repo, err := r.deps.Queue.GetOrCreateRepo(ctx, string(ref.Forge), ref.Owner, ref.Name)
 	if err != nil {
 		return err
@@ -133,6 +138,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 			Advance:        triggerPoll,
 
 			ChecksFromConfig: r.deps.ChecksFromConfig,
+			MergeChecks:      r.deps.MergeChecks,
 		}
 	}
 
@@ -161,6 +167,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		MergeLabel:     r.deps.MergeLabel,
 
 		ChecksFromConfig: r.deps.ChecksFromConfig,
+		MergeChecks:      r.deps.MergeChecks,
 	}
 	if batchEngine != nil {
 		monDeps.Batch = batchEngine
@@ -186,6 +193,8 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		ExternalURL:         r.deps.ExternalURL,
 		FallbackChecks:      r.deps.FallbackChecks,
 		ChecksFromConfig:    r.deps.ChecksFromConfig,
+		PRChecks:            r.deps.PRChecks,
+		MergeChecks:         r.deps.MergeChecks,
 		MergeLabel:          r.deps.MergeLabel,
 		PriorityLabel:       r.deps.PriorityLabel,
 		LabelPrefix:         r.deps.LabelPrefix,
@@ -309,4 +318,32 @@ func (r *RepoRegistry) Keys() map[string]struct{} {
 		keys[k] = struct{}{}
 	}
 	return keys
+}
+
+// warnUnreportableChecks flags protection checks the merge branch would wait
+// for but can never receive, which otherwise only shows up as every PR timing
+// out. With MergeChecks set (or checks taken from config) protection does not
+// gate the merge branch, so there is nothing to warn about here; main checks
+// the configured lists.
+func (r *RepoRegistry) warnUnreportableChecks(ctx context.Context, f forge.Forge, key string, ref forge.RepoRef) {
+	if r.deps.MergeChecks != nil || r.deps.ChecksFromConfig {
+		return
+	}
+	pl, ok := f.(forge.ProtectionLister)
+	if !ok {
+		return
+	}
+	rules, err := pl.ListProtectedChecks(ctx, ref.Owner, ref.Name)
+	if err != nil {
+		slog.Debug("could not list branch protection for check diagnostics", "repo", key, "error", err)
+		return
+	}
+	for rule, checks := range rules {
+		if bad := forge.PullRequestOnlyContexts(checks); len(bad) > 0 {
+			slog.Warn("required checks can only report on pull request events and never on a merge branch; "+
+				"merge-branch runs will wait for them until the check timeout. "+
+				"Set GITEA_MQ_MERGE_REQUIRED_CHECKS to the checks that run on gitea-mq/* branches",
+				"repo", key, "rule", rule, "checks", bad)
+		}
+	}
 }
