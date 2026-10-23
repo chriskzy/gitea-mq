@@ -3,6 +3,7 @@ package poller_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,6 +267,14 @@ func TestPollOnce_Reconcile(t *testing.T) {
 			name:     "automerge_cancelled",
 			openPRs:  []gitea.PR{makePR(42, "sha42", "main")},
 			timeline: cancelledTimeline(),
+		},
+		{
+			// Intent is kept (no cancel) so the PR re-enters once ready.
+			name:        "converted_to_draft",
+			openPRs:     []gitea.PR{draftPR(42, "sha42", "main")},
+			timeline:    automergeTimeline(),
+			wantAdvance: true,
+			wantComment: true,
 		},
 	}
 

@@ -51,19 +51,26 @@ gitea-mq can manage Gitea repos, GitHub repos, or both from one process. At
 least one backend must be configured. All configuration is via environment
 variables.
 
+Every secret marked `/ _FILE` in the table below can be read from a file
+instead by appending `_FILE` to the variable name, e.g.
+`GITEA_MQ_GITEA_TOKEN_FILE=/run/secrets/gitea-token`. This keeps the value out
+of the process environment, where `docker inspect`, `/proc/<pid>/environ` and
+child processes can see it. Trailing newlines in the file are ignored (the PEM
+key is read verbatim). If both forms are set, the plain variable wins.
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GITEA_MQ_GITEA_URL` | gitea | - | Gitea instance URL. Setting this enables the Gitea backend. |
-| `GITEA_MQ_GITEA_TOKEN` | gitea | - | API token with `repository` and `issue` read/write scopes |
+| `GITEA_MQ_GITEA_TOKEN` / `_FILE` | gitea | - | API token with `repository` and `issue` read/write scopes, or path to a file containing it |
 | `GITEA_MQ_REPOS` | no | - | Comma-separated `owner/repo` list of Gitea repos (optional when `GITEA_MQ_TOPIC` is set) |
 | `GITEA_MQ_TOPIC` | no | - | Discover Gitea repos by topic instead of (or in addition to) a static list |
-| `GITEA_MQ_WEBHOOK_SECRET` | gitea | - | Shared secret for the Gitea webhook HMAC |
+| `GITEA_MQ_WEBHOOK_SECRET` / `_FILE` | gitea | - | Shared secret for the Gitea webhook HMAC, or path to a file containing it |
 | `GITEA_MQ_GITHUB_APP_ID` | github | - | GitHub App ID. Setting this enables the GitHub backend. |
 | `GITEA_MQ_GITHUB_PRIVATE_KEY` / `_FILE` | github | - | PEM-encoded App private key, or path to a file containing it |
-| `GITEA_MQ_GITHUB_WEBHOOK_SECRET` | github | - | Webhook secret configured on the GitHub App |
+| `GITEA_MQ_GITHUB_WEBHOOK_SECRET` / `_FILE` | github | - | Webhook secret configured on the GitHub App, or path to a file containing it |
 | `GITEA_MQ_GITHUB_REPOS` | no | - | Comma-separated `owner/repo` list of GitHub repos to manage in addition to all repos the App is installed on |
 | `GITEA_MQ_GITHUB_POLL_INTERVAL` | no | `GITEA_MQ_POLL_INTERVAL` | Override the reconcile poll interval for GitHub (its rate limit is much higher) |
-| `GITEA_MQ_DATABASE_URL` | yes | - | PostgreSQL connection string |
+| `GITEA_MQ_DATABASE_URL` / `_FILE` | yes | - | PostgreSQL connection string, or path to a file containing it |
 | `GITEA_MQ_LISTEN_ADDR` | no | `:8080` | HTTP listen address |
 | `GITEA_MQ_WEBHOOK_PATH` | no | `/webhook` | Legacy alias for the Gitea webhook endpoint (the canonical path is `/webhook/gitea`) |
 | `GITEA_MQ_EXTERNAL_URL` | yes | - | URL where Gitea can reach this service (used for webhook auto-setup and commit status target URLs) |
@@ -109,6 +116,14 @@ Trade-offs and prerequisites:
   `BATCH_MAX` modest if it bothers you.
 - If the forge does not detect a PR as merged within ~10s of the fast-forward,
   gitea-mq closes it with a "Merged as `<sha>`" comment.
+
+## Draft PRs
+
+Draft PRs (GitHub drafts, or a Gitea title starting with a work-in-progress
+prefix such as `WIP:`) are never queued, even when automerge is armed or the
+merge label is set. Their `gitea-mq` status explains why; the merge intent is
+kept, so the PR enters the queue once it is marked ready. A queued PR that is
+converted back to a draft is removed from the queue, again keeping its intent.
 
 ## Issue dependencies (Gitea)
 
@@ -199,7 +214,12 @@ labels, so each transition is a single API call.
 On startup, gitea-mq configures each managed repository:
 
 - Gitea: adds `gitea-mq` as a required status check to all existing branch
-  protection rules and creates a `status` webhook pointed at the service.
+  protection rules and creates a webhook pointed at the service for commit
+  statuses and pull request events (opened/closed, label, push, review). A
+  hook that already exists with that URL is left untouched; add the pull
+  request events to it by hand to get immediate reconciles on label changes
+  and pushes instead of waiting for the next poll. Events gitea-mq does not
+  use are acknowledged with `200`.
 - GitHub: enables `allow_auto_merge` and creates a `gitea-mq` repository
   ruleset that requires the `gitea-mq` check on the default branch (the App and
   repo admins are bypass actors). Add further target branches to the ruleset's
@@ -291,8 +311,16 @@ allows a merge. It resolves this in order:
 
 A small web dashboard shows queue status across all managed repos, lets you
 drill into individual repos to see queued PRs, and inspect check results per
-PR. It auto-refreshes without JavaScript. There is also a `/healthz` endpoint
-for monitoring.
+PR. It auto-refreshes without JavaScript.
+
+For monitoring there are two endpoints:
+
+- `/healthz` (liveness): `200 ok` whenever the process serves HTTP.
+- `/readyz` (readiness): `200` only when PostgreSQL answers a ping and every
+  configured forge accepts gitea-mq's credentials (Gitea: `GET /user` with the
+  token; GitHub: `GET /app` with the App JWT), `503` otherwise. The JSON body
+  names each check, e.g. `{"status":"unavailable","checks":{"database":"ok","gitea":"401 ..."}}`.
+  Results are cached for 10s so frequent probes do not add forge traffic.
 
 Repo and PR pages live under `/repo/{forge}/{owner}/{name}` (e.g.
 `/repo/github/org/app/pr/42`). Paths without the forge segment resolve as Gitea
@@ -321,10 +349,16 @@ services:
       GITEA_MQ_DATABASE_URL: postgres://gitea-mq:changeme@db/gitea-mq?sslmode=disable
       GITEA_MQ_EXTERNAL_URL: https://mq.example.com
       GITEA_MQ_GITEA_URL: https://gitea.example.com
-      GITEA_MQ_GITEA_TOKEN: ...
-      GITEA_MQ_WEBHOOK_SECRET: ...
+      GITEA_MQ_GITEA_TOKEN_FILE: /run/secrets/gitea_token
+      GITEA_MQ_WEBHOOK_SECRET_FILE: /run/secrets/webhook_secret
       GITEA_MQ_TOPIC: merge-queue
+    secrets: [gitea_token, webhook_secret]
     volumes: [cache:/var/cache/gitea-mq]
+secrets:
+  gitea_token:
+    file: ./secrets/gitea_token
+  webhook_secret:
+    file: ./secrets/webhook_secret
 volumes:
   db:
   cache:

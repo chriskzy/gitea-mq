@@ -43,11 +43,21 @@ jobs:
       - name: Push images
         env:
           REGCTL_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          LABELS: ${{ steps.meta.outputs.labels }}
         run: |
           set -xve
           PATH="$(nix build --inputs-from . nixpkgs#regctl --print-out-paths --no-link)/bin:$PATH"
           regctl registry login "$REGISTRY" -u "${{ github.actor }}" --pass-stdin <<< "$REGCTL_PASSWORD"
           regctl image import "ocidir://local:gitea-mq" ./result
+          # Apply the labels computed by docker/metadata-action (revision,
+          # created, version, source) to every platform's image config.
+          label_args=()
+          while IFS= read -r label; do
+            if [ -n "$label" ]; then label_args+=(--label "$label"); fi
+          done <<< "$LABELS"
+          if [ "${#label_args[@]}" -gt 0 ]; then
+            regctl image mod "ocidir://local:gitea-mq" --replace "${label_args[@]}"
+          fi
           for tag in $(echo '${{ steps.meta.outputs.tags }}' | tr ' ' '\n'); do
             regctl image copy "ocidir://local:gitea-mq" "$tag"
           done

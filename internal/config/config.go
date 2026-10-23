@@ -84,7 +84,11 @@ func Load() (*Config, error) {
 
 	var missing []string
 
-	cfg.DatabaseURL = os.Getenv("GITEA_MQ_DATABASE_URL")
+	var err error
+	cfg.DatabaseURL, err = readSecretString("GITEA_MQ_DATABASE_URL")
+	if err != nil {
+		return nil, err
+	}
 	if cfg.DatabaseURL == "" {
 		missing = append(missing, "GITEA_MQ_DATABASE_URL")
 	}
@@ -94,7 +98,6 @@ func Load() (*Config, error) {
 		missing = append(missing, "GITEA_MQ_EXTERNAL_URL")
 	}
 
-	var err error
 	cfg.Gitea, err = loadGitea(&missing)
 	if err != nil {
 		return nil, err
@@ -230,11 +233,18 @@ func loadGitea(missing *[]string) (*GiteaConfig, error) {
 		Topic: os.Getenv("GITEA_MQ_TOPIC"),
 	}
 
-	gc.Token = os.Getenv("GITEA_MQ_GITEA_TOKEN")
+	var err error
+	gc.Token, err = readSecretString("GITEA_MQ_GITEA_TOKEN")
+	if err != nil {
+		return nil, err
+	}
 	if gc.Token == "" {
 		*missing = append(*missing, "GITEA_MQ_GITEA_TOKEN")
 	}
-	gc.WebhookSecret = os.Getenv("GITEA_MQ_WEBHOOK_SECRET")
+	gc.WebhookSecret, err = readSecretString("GITEA_MQ_WEBHOOK_SECRET")
+	if err != nil {
+		return nil, err
+	}
 	if gc.WebhookSecret == "" {
 		*missing = append(*missing, "GITEA_MQ_WEBHOOK_SECRET")
 	}
@@ -272,7 +282,10 @@ func loadGithub(missing *[]string) (*GithubConfig, error) {
 		*missing = append(*missing, "GITEA_MQ_GITHUB_PRIVATE_KEY")
 	}
 
-	gc.WebhookSecret = os.Getenv("GITEA_MQ_GITHUB_WEBHOOK_SECRET")
+	gc.WebhookSecret, err = readSecretString("GITEA_MQ_GITHUB_WEBHOOK_SECRET")
+	if err != nil {
+		return nil, err
+	}
 	if gc.WebhookSecret == "" {
 		*missing = append(*missing, "GITEA_MQ_GITHUB_WEBHOOK_SECRET")
 	}
@@ -287,7 +300,8 @@ func loadGithub(missing *[]string) (*GithubConfig, error) {
 }
 
 // readSecret reads <key> or, if unset, the file at <key>_FILE. The _FILE form
-// keeps multi-line PEM keys out of process environment listings.
+// keeps secrets out of process environment listings (`docker inspect`,
+// /proc/<pid>/environ) and lets multi-line PEM keys be mounted as-is.
 func readSecret(key string) ([]byte, error) {
 	if v := os.Getenv(key); v != "" {
 		return []byte(v), nil
@@ -300,6 +314,17 @@ func readSecret(key string) ([]byte, error) {
 		return b, nil
 	}
 	return nil, nil
+}
+
+// readSecretString is readSecret for single-line values (tokens, shared
+// secrets, connection strings). Trailing newlines are dropped so files written
+// with `echo` or a secrets manager work as-is.
+func readSecretString(key string) (string, error) {
+	b, err := readSecret(key)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(b), "\r\n"), nil
 }
 
 func envOrDefault(key, defaultVal string) string {
