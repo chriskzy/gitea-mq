@@ -45,7 +45,12 @@
           default = gitea-mq;
         }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          gitea-mq-docker = pkgs.callPackage ./nix/docker.nix { inherit gitea-mq; };
+          gitea-mq-docker = pkgs.callPackage ./nix/docker.nix {
+            inherit gitea-mq;
+            # Lets `docker inspect` prove which commit a pinned digest holds.
+            revision = self.rev or self.dirtyRev or null;
+            lastModifiedDate = self.lastModifiedDate or null;
+          };
         }
       );
 
