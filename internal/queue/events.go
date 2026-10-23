@@ -44,6 +44,11 @@ type Event struct {
 	// (merged, ejected, removed). RecordEvent stores the elapsed time as
 	// detail.queued_seconds.
 	EnqueuedAt time.Time
+
+	// ID and Time are filled by RecordEvent before observers run. ID is 0
+	// when the row could not be stored.
+	ID   int64
+	Time time.Time
 }
 
 // QueuedFor is how long the PR was queued, or 0 when unknown.
@@ -95,7 +100,7 @@ func (s *Service) RecordEvent(ctx context.Context, e Event) {
 			detail = b
 		}
 	}
-	err := s.queries().InsertEvent(context.WithoutCancel(ctx), pg.InsertEventParams{
+	row, err := s.queries().InsertEvent(context.WithoutCancel(ctx), pg.InsertEventParams{
 		RepoID:       e.RepoID,
 		Kind:         string(e.Kind),
 		PrNumber:     pgtype.Int8{Int64: e.PRNumber, Valid: e.PRNumber != 0},
@@ -107,6 +112,9 @@ func (s *Service) RecordEvent(ctx context.Context, e Event) {
 	})
 	if err != nil {
 		slog.Warn("record queue event failed", "kind", e.Kind, "pr", e.PRNumber, "error", err)
+		e.Time = time.Now()
+	} else {
+		e.ID, e.Time = row.ID, row.CreatedAt.Time
 	}
 
 	s.events.mu.RLock()
