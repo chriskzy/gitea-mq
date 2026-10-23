@@ -157,7 +157,10 @@ Read-only JSON endpoints:
   priority, enqueue and testing-start times, merge branch and batch id.
 
 With `GITEA_MQ_METRICS=true`, `/metrics` exposes the same events as the
-counter `gitea_mq_events_total{repo,kind,reason}`. It is kept in memory and
+counter `gitea_mq_events_total{repo,kind,reason}`, plus the histogram
+`gitea_mq_queue_duration_seconds{repo,outcome}`: time from enqueue until the
+PR was merged, ejected or removed (buckets from one minute to one day).
+Terminal events also carry `queued_seconds` in their `detail`. It is kept in memory and
 resets on restart; use the API for durable numbers. Events older than
 `GITEA_MQ_EVENT_RETENTION` are pruned hourly.
 

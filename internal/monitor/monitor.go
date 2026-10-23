@@ -218,6 +218,7 @@ func removeFromQueue(ctx context.Context, deps *Deps, entry *pg.QueueEntry, reas
 	deps.Queue.RecordEvent(ctx, queue.Event{
 		RepoID: deps.RepoID, Kind: queue.EventEjected, PRNumber: entry.PrNumber,
 		TargetBranch: entry.TargetBranch, HeadSHA: entry.PrHeadSha, Reason: reason, Detail: detail,
+		EnqueuedAt: entry.EnqueuedAt.Time,
 	})
 
 	return nil

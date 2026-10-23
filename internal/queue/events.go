@@ -40,6 +40,18 @@ type Event struct {
 	HeadSHA      string
 	Reason       string
 	Detail       map[string]any
+	// EnqueuedAt is set on events that end a PR's time in the queue
+	// (merged, ejected, removed). RecordEvent stores the elapsed time as
+	// detail.queued_seconds.
+	EnqueuedAt time.Time
+}
+
+// QueuedFor is how long the PR was queued, or 0 when unknown.
+func (e Event) QueuedFor(now time.Time) time.Duration {
+	if e.EnqueuedAt.IsZero() || now.Before(e.EnqueuedAt) {
+		return 0
+	}
+	return now.Sub(e.EnqueuedAt)
 }
 
 // EventObserver is told about every recorded event, e.g. to update in-memory
@@ -71,6 +83,12 @@ func (s *Service) rememberRepo(r pg.Repo) {
 // RecordEvent stores e. It is best-effort: the queue must keep moving when
 // the event log cannot be written, so errors are only logged.
 func (s *Service) RecordEvent(ctx context.Context, e Event) {
+	if d := e.QueuedFor(time.Now()); d > 0 {
+		if e.Detail == nil {
+			e.Detail = map[string]any{}
+		}
+		e.Detail["queued_seconds"] = int64(d.Seconds())
+	}
 	detail := []byte("{}")
 	if len(e.Detail) > 0 {
 		if b, err := json.Marshal(e.Detail); err == nil {
