@@ -183,6 +183,24 @@ in
       description = "Cap on CI builds spent bisecting one failing batch. 0 means unlimited.";
     };
 
+    requiredChecksSource = lib.mkOption {
+      type = lib.types.enum [
+        "protection"
+        "config"
+      ];
+      default = "protection";
+      description = ''
+        Where required checks come from. "config" uses requiredChecks only and
+        never reads branch protection, which Gitea restricts to repo admins.
+      '';
+    };
+
+    autoSetup = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Configure branch protection and webhooks on startup. Disable for non-admin tokens.";
+    };
+
     refreshInterval = lib.mkOption {
       type = lib.types.str;
       default = "10s";
@@ -307,6 +325,8 @@ in
         GITEA_MQ_SKIP_QUEUE_IF_UP_TO_DATE = lib.boolToString cfg.skipQueueIfUpToDate;
         GITEA_MQ_BATCH_MAX = toString cfg.batchMax;
         GITEA_MQ_BISECT_MAX_STEPS = toString cfg.bisectMaxSteps;
+        GITEA_MQ_REQUIRED_CHECKS_SOURCE = cfg.requiredChecksSource;
+        GITEA_MQ_AUTO_SETUP = lib.boolToString cfg.autoSetup;
         GITEA_MQ_REFRESH_INTERVAL = cfg.refreshInterval;
         GITEA_MQ_DISCOVERY_INTERVAL = cfg.discoveryInterval;
         GITEA_MQ_LOG_LEVEL = cfg.logLevel;
@@ -340,15 +360,16 @@ in
 
       path = [ pkgs.git ];
 
-      # Script wrapper to load secrets from credential files into env vars.
+      # Point the _FILE variables at the systemd credentials so secret values
+      # never enter the process environment.
       script = ''
         ${lib.optionalString giteaEnabled ''
-          export GITEA_MQ_GITEA_TOKEN="$(< "$CREDENTIALS_DIRECTORY/gitea-token")"
-          export GITEA_MQ_WEBHOOK_SECRET="$(< "$CREDENTIALS_DIRECTORY/webhook-secret")"
+          export GITEA_MQ_GITEA_TOKEN_FILE="$CREDENTIALS_DIRECTORY/gitea-token"
+          export GITEA_MQ_WEBHOOK_SECRET_FILE="$CREDENTIALS_DIRECTORY/webhook-secret"
         ''}
         ${lib.optionalString githubEnabled ''
           export GITEA_MQ_GITHUB_PRIVATE_KEY_FILE="$CREDENTIALS_DIRECTORY/github-private-key"
-          export GITEA_MQ_GITHUB_WEBHOOK_SECRET="$(< "$CREDENTIALS_DIRECTORY/github-webhook-secret")"
+          export GITEA_MQ_GITHUB_WEBHOOK_SECRET_FILE="$CREDENTIALS_DIRECTORY/github-webhook-secret"
         ''}
         exec ${lib.getExe cfg.package}
       '';

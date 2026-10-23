@@ -26,7 +26,7 @@ func (e *Engine) HandleCheck(ctx context.Context, entry *pg.QueueEntry, checkCtx
 	if err := e.Queue.SaveCheckStatus(ctx, entry.ID, checkCtx, state, targetURL); err != nil {
 		return err
 	}
-	required, err := monitor.ResolveRequiredChecks(ctx, e.Forge, e.Owner, e.Repo, b.TargetBranch, e.FallbackChecks)
+	required, err := monitor.ResolveRequiredChecks(ctx, e.Forge, e.Owner, e.Repo, b.TargetBranch, e.FallbackChecks, e.ChecksFromConfig)
 	if err != nil {
 		return err
 	}

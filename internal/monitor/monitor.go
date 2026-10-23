@@ -25,7 +25,9 @@ type Deps struct {
 	ExternalURL    string
 	CheckTimeout   time.Duration
 	FallbackChecks []string // from GITEA_MQ_REQUIRED_CHECKS
-	MergeLabel     string
+	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
+	ChecksFromConfig bool
+	MergeLabel       string
 
 	// Batch, when non-nil, intercepts check results for entries that belong
 	// to a live batch. The single-PR success/failure handlers are skipped.
@@ -54,8 +56,13 @@ const (
 
 // ResolveRequiredChecks determines which check contexts are required for a
 // target branch: forge-reported required checks first, falling back to config,
-// then to "any single success suffices" (empty list).
-func ResolveRequiredChecks(ctx context.Context, f forge.Forge, owner, repo, targetBranch string, fallback []string) ([]string, error) {
+// then to "any single success suffices" (empty list). With configOnly the
+// forge is not asked at all, so tokens that cannot read branch protection
+// (Gitea restricts it to repo admins) still work.
+func ResolveRequiredChecks(ctx context.Context, f forge.Forge, owner, repo, targetBranch string, fallback []string, configOnly bool) ([]string, error) {
+	if configOnly {
+		return fallback, nil
+	}
 	checks, err := f.GetRequiredChecks(ctx, owner, repo, targetBranch)
 	if err != nil {
 		return nil, fmt.Errorf("get required checks for %s: %w", targetBranch, err)
@@ -246,7 +253,7 @@ func ProcessCheckStatus(ctx context.Context, deps *Deps, entry *pg.QueueEntry, c
 		return fmt.Errorf("save check status for PR #%d: %w", entry.PrNumber, err)
 	}
 
-	requiredChecks, err := ResolveRequiredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.TargetBranch, deps.FallbackChecks)
+	requiredChecks, err := ResolveRequiredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.TargetBranch, deps.FallbackChecks, deps.ChecksFromConfig)
 	if err != nil {
 		return fmt.Errorf("resolve required checks: %w", err)
 	}

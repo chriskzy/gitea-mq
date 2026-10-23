@@ -16,6 +16,7 @@ import (
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/gitea"
 	"github.com/Mic92/gitea-mq/internal/github"
+	"github.com/Mic92/gitea-mq/internal/health"
 	"github.com/Mic92/gitea-mq/internal/metrics"
 	"github.com/Mic92/gitea-mq/internal/queue"
 	"github.com/Mic92/gitea-mq/internal/registry"
@@ -64,7 +65,12 @@ func run() error {
 		"idle_poll_interval", cfg.IdlePollInterval,
 		"check_timeout", cfg.CheckTimeout,
 		"batch_max", cfg.BatchMax,
+		"auto_setup", cfg.AutoSetup,
+		"checks_from_config", cfg.ChecksFromConfig,
 	)
+	if cfg.ChecksFromConfig && len(cfg.RequiredChecks) == 0 {
+		slog.Warn("GITEA_MQ_REQUIRED_CHECKS_SOURCE=config but GITEA_MQ_REQUIRED_CHECKS is empty: any single passing status will let a merge branch pass")
+	}
 
 	// Graceful shutdown context.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -87,9 +93,12 @@ func run() error {
 	forges := forge.NewSet()
 	var discSources []discovery.Source
 
+	readyChecks := []health.Check{{Name: "database", Probe: pool.Ping}}
+
 	var giteaWebhookSecret string
 	if cfg.Gitea != nil {
 		giteaClient := gitea.NewHTTPClient(cfg.Gitea.URL, cfg.Gitea.Token)
+		readyChecks = append(readyChecks, health.Check{Name: "gitea", Probe: giteaClient.Ping})
 		giteaClient.SetGitCacheDir(cfg.CacheDir)
 		giteaClient.CleanupGitCache(gitea.DefaultCacheMaxAge)
 		forges.Register(gitea.NewForge(giteaClient, cfg.Gitea.URL))
@@ -97,7 +106,7 @@ func run() error {
 		if cfg.Gitea.Topic != "" {
 			discSources = append(discSources, discovery.Source{
 				Kind: forge.KindGitea,
-				List: gitea.TopicSource(giteaClient, cfg.Gitea.Topic),
+				List: gitea.TopicSource(giteaClient, cfg.Gitea.Topic, cfg.AutoSetup),
 			})
 		}
 	}
@@ -115,6 +124,7 @@ func run() error {
 		if err := app.SyncHookConfig(ctx, cfg.ExternalURL, cfg.Github.WebhookSecret); err != nil {
 			slog.Warn("github: sync app webhook config failed", "err", err)
 		}
+		readyChecks = append(readyChecks, health.Check{Name: "github", Probe: app.Ping})
 		forges.Register(github.NewForge(app, ""))
 		discSources = append(discSources, discovery.Source{
 			Kind: forge.KindGithub,
@@ -132,6 +142,8 @@ func run() error {
 		IdlePollInterval:    cfg.IdlePollInterval,
 		CheckTimeout:        cfg.CheckTimeout,
 		FallbackChecks:      cfg.RequiredChecks,
+		ChecksFromConfig:    cfg.ChecksFromConfig,
+		SkipSetup:           !cfg.AutoSetup,
 		MergeLabel:          cfg.MergeLabel,
 		PriorityLabel:       cfg.PriorityLabel,
 		LabelPrefix:         cfg.LabelPrefix,
@@ -194,6 +206,13 @@ func run() error {
 	}
 
 	// Health check.
+	// Liveness: the process serves HTTP. Readiness: the database and every
+	// configured forge answer, so the queue can make progress.
+	mux.Handle("/readyz", &health.Readiness{
+		Checks:  readyChecks,
+		Timeout: 5 * time.Second,
+		TTL:     10 * time.Second,
+	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
@@ -202,12 +221,13 @@ func run() error {
 
 	// Dashboard — uses registry for dynamic repo listing.
 	webDeps := &web.Deps{
-		Queue:           queueSvc,
-		Repos:           reg,
-		Forges:          forges,
-		FallbackChecks:  cfg.RequiredChecks,
-		RefreshInterval: int(cfg.RefreshInterval.Seconds()),
-		BasePath:        cfg.BasePath,
+		Queue:            queueSvc,
+		Repos:            reg,
+		Forges:           forges,
+		FallbackChecks:   cfg.RequiredChecks,
+		ChecksFromConfig: cfg.ChecksFromConfig,
+		RefreshInterval:  int(cfg.RefreshInterval.Seconds()),
+		BasePath:         cfg.BasePath,
 	}
 	dashMux := web.NewMux(webDeps)
 	// Mount dashboard routes — the web mux handles /, /repo/, /static/.
