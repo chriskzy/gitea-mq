@@ -93,6 +93,9 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_CACHE_DIR` | no | `$XDG_CACHE_HOME/gitea-mq` | Directory for persistent bare git clones used for merge operations; unused repos are removed after 30 days |
 | `GITEA_MQ_LOG_LEVEL` | no | `info` | Log level: debug, info, warn, error |
 | `GITEA_MQ_METRICS` | no | `false` | Serve in-memory event counters in Prometheus format at `/metrics` (see [Queue events](#queue-events)) |
+| `GITEA_MQ_NOTIFY_URL` | no | - | POST every queue event, signed, to this URL (see [Event notifications](#event-notifications)) |
+| `GITEA_MQ_NOTIFY_SECRET` / `_FILE` | with notify URL | - | HMAC secret for `X-Gitea-MQ-Signature` |
+| `GITEA_MQ_NOTIFY_EVENTS` | no | all | Comma-separated event kinds to deliver |
 | `GITEA_MQ_EVENT_RETENTION` | no | `2160h` | How long queue events are kept in PostgreSQL (90 days) |
 
 ## Batching (bors-style)
@@ -179,6 +182,25 @@ With `GITEA_MQ_METRICS=true`, `/metrics` exposes the same events as the
 counter `gitea_mq_events_total{repo,kind,reason}`. It is kept in memory and
 resets on restart; use the API for durable numbers. Events older than
 `GITEA_MQ_EVENT_RETENTION` are pruned hourly.
+
+### Event notifications
+
+Set `GITEA_MQ_NOTIFY_URL` to have every recorded event POSTed there as JSON
+(the same fields as `/api/events`, including `id`), e.g. so a dispatcher can
+tell an author within seconds that their PR was ejected and why:
+
+```json
+{"id":1234,"time":"…","repo":"gitea:org/app","kind":"ejected","reason":"check_failed",
+ "pr":42,"target_branch":"main","head_sha":"…","detail":{"check":"ci","target_url":"https://ci/…"}}
+```
+
+Each request carries `X-Gitea-MQ-Event: <kind>` and
+`X-Gitea-MQ-Signature: sha256=<hex HMAC-SHA256 of the body>` keyed with
+`GITEA_MQ_NOTIFY_SECRET` (or `_FILE`), which is required.
+`GITEA_MQ_NOTIFY_EVENTS=ejected,merged` limits the kinds sent. Delivery is
+best-effort: a few retries on errors, 5xx and 429, then the event is
+dropped; the events table stays the durable record, so a consumer can
+catch up with `/api/events?after=<last id>`.
 
 ## Repo selection
 

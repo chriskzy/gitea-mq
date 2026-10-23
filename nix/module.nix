@@ -245,6 +245,25 @@ in
       description = "How long queue events are kept in PostgreSQL.";
     };
 
+    notify = {
+      url = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Endpoint that receives each queue event as a signed JSON POST.";
+      };
+      secretFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "File containing the HMAC secret used to sign notifications. Required with notify.url.";
+      };
+      events = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "ejected" ];
+        description = "Event kinds to deliver; empty delivers all.";
+      };
+    };
+
     logLevel = lib.mkOption {
       type = lib.types.enum [
         "debug"
@@ -285,6 +304,10 @@ in
       {
         assertion = !giteaEnabled || (cfg.giteaTokenFile != null && cfg.webhookSecretFile != null);
         message = "services.gitea-mq: giteaTokenFile and webhookSecretFile are required when giteaUrl is set.";
+      }
+      {
+        assertion = cfg.notify.url == null || cfg.notify.secretFile != null;
+        message = "services.gitea-mq: notify.secretFile is required when notify.url is set.";
       }
       {
         assertion =
@@ -330,6 +353,9 @@ in
           ++ lib.optionals githubEnabled [
             "github-private-key:${cfg.github.privateKeyFile}"
             "github-webhook-secret:${cfg.github.webhookSecretFile}"
+          ]
+          ++ lib.optionals (cfg.notify.url != null) [
+            "notify-secret:${cfg.notify.secretFile}"
           ];
       };
 
@@ -352,6 +378,10 @@ in
         GITEA_MQ_LOG_LEVEL = cfg.logLevel;
         GITEA_MQ_METRICS = lib.boolToString cfg.metrics;
         GITEA_MQ_EVENT_RETENTION = cfg.eventRetention;
+      }
+      // lib.optionalAttrs (cfg.notify.url != null) {
+        GITEA_MQ_NOTIFY_URL = cfg.notify.url;
+        GITEA_MQ_NOTIFY_EVENTS = lib.concatStringsSep "," cfg.notify.events;
         GITEA_MQ_CACHE_DIR = "/var/cache/gitea-mq";
       }
       // lib.optionalAttrs (cfg.repos != [ ]) {
@@ -396,6 +426,9 @@ in
         ${lib.optionalString githubEnabled ''
           export GITEA_MQ_GITHUB_PRIVATE_KEY_FILE="$CREDENTIALS_DIRECTORY/github-private-key"
           export GITEA_MQ_GITHUB_WEBHOOK_SECRET_FILE="$CREDENTIALS_DIRECTORY/github-webhook-secret"
+        ''}
+        ${lib.optionalString (cfg.notify.url != null) ''
+          export GITEA_MQ_NOTIFY_SECRET_FILE="$CREDENTIALS_DIRECTORY/notify-secret"
         ''}
         exec ${lib.getExe cfg.package}
       '';

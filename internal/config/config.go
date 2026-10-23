@@ -41,6 +41,11 @@ type Config struct {
 	Metrics bool
 	// EventRetention is how long queue events are kept.
 	EventRetention time.Duration
+	// NotifyURL receives every queue event as a signed POST; empty disables.
+	NotifyURL    string
+	NotifySecret string
+	// NotifyEvents limits deliveries to these kinds; empty sends all.
+	NotifyEvents []string
 	// ChecksFromConfig uses RequiredChecks only and never reads branch
 	// protection (GITEA_MQ_REQUIRED_CHECKS_SOURCE=config).
 	ChecksFromConfig bool
@@ -213,6 +218,20 @@ func Load() (*Config, error) {
 	cfg.EventRetention, err = parseDurationOrDefault("GITEA_MQ_EVENT_RETENTION", 90*24*time.Hour)
 	if err != nil {
 		return nil, err
+	}
+
+	cfg.NotifyURL = os.Getenv("GITEA_MQ_NOTIFY_URL")
+	cfg.NotifySecret, err = readSecretString("GITEA_MQ_NOTIFY_SECRET")
+	if err != nil {
+		return nil, err
+	}
+	if cfg.NotifyURL != "" && cfg.NotifySecret == "" {
+		return nil, fmt.Errorf("GITEA_MQ_NOTIFY_URL is set but GITEA_MQ_NOTIFY_SECRET(_FILE) is not: deliveries must be signed")
+	}
+	for _, k := range strings.Split(os.Getenv("GITEA_MQ_NOTIFY_EVENTS"), ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			cfg.NotifyEvents = append(cfg.NotifyEvents, k)
+		}
 	}
 
 	cfg.CacheDir = os.Getenv("GITEA_MQ_CACHE_DIR")

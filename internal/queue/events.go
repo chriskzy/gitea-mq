@@ -40,6 +40,11 @@ type Event struct {
 	HeadSHA      string
 	Reason       string
 	Detail       map[string]any
+
+	// ID and Time are filled by RecordEvent before observers run. ID is 0
+	// when the row could not be stored.
+	ID   int64
+	Time time.Time
 }
 
 // EventObserver is told about every recorded event, e.g. to update in-memory
@@ -77,7 +82,7 @@ func (s *Service) RecordEvent(ctx context.Context, e Event) {
 			detail = b
 		}
 	}
-	err := s.queries().InsertEvent(context.WithoutCancel(ctx), pg.InsertEventParams{
+	row, err := s.queries().InsertEvent(context.WithoutCancel(ctx), pg.InsertEventParams{
 		RepoID:       e.RepoID,
 		Kind:         string(e.Kind),
 		PrNumber:     pgtype.Int8{Int64: e.PRNumber, Valid: e.PRNumber != 0},
@@ -89,6 +94,9 @@ func (s *Service) RecordEvent(ctx context.Context, e Event) {
 	})
 	if err != nil {
 		slog.Warn("record queue event failed", "kind", e.Kind, "pr", e.PRNumber, "error", err)
+		e.Time = time.Now()
+	} else {
+		e.ID, e.Time = row.ID, row.CreatedAt.Time
 	}
 
 	s.events.mu.RLock()

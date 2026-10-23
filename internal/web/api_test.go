@@ -81,3 +81,19 @@ func jsonNum(f float64) string {
 	b, _ := json.Marshal(int64(f))
 	return string(b)
 }
+
+// Observers (notifications) carry the stored id so consumers can resume
+// with /api/events?after=<id>.
+func TestRecordEventObserverGetsID(t *testing.T) {
+	svc, ctx, repoID := testutil.TestQueueService(t)
+	var got queue.Event
+	svc.OnEvent(func(_ string, e queue.Event) { got = e })
+	svc.RecordEvent(ctx, queue.Event{RepoID: repoID, Kind: queue.EventEjected, PRNumber: 5})
+	evs, err := svc.ListEvents(ctx, queue.EventFilter{RepoID: repoID, Limit: 1})
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("list: %v %v", evs, err)
+	}
+	if got.ID != evs[0].ID || got.Time.IsZero() {
+		t.Fatalf("observer event id=%d time=%v, stored id=%d", got.ID, got.Time, evs[0].ID)
+	}
+}
