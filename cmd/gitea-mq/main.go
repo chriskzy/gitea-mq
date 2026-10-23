@@ -17,6 +17,7 @@ import (
 	"github.com/Mic92/gitea-mq/internal/gitea"
 	"github.com/Mic92/gitea-mq/internal/github"
 	"github.com/Mic92/gitea-mq/internal/health"
+	"github.com/Mic92/gitea-mq/internal/metrics"
 	"github.com/Mic92/gitea-mq/internal/queue"
 	"github.com/Mic92/gitea-mq/internal/registry"
 	"github.com/Mic92/gitea-mq/internal/store/pg"
@@ -83,6 +84,12 @@ func run() error {
 	defer pool.Close()
 
 	queueSvc := queue.NewService(pool)
+	var metricsReg *metrics.Registry
+	if cfg.Metrics {
+		metricsReg = metrics.New()
+		queueSvc.OnEvent(metricsReg.Observe)
+	}
+	go pruneEvents(ctx, queueSvc, cfg.EventRetention)
 	forges := forge.NewSet()
 	var discSources []discovery.Source
 
@@ -184,6 +191,21 @@ func run() error {
 		))
 	}
 
+	// Queue event log (read-only) and optional in-memory metrics.
+	repoID := func(key string) (int64, bool) {
+		m, ok := reg.Lookup(key)
+		if !ok {
+			return 0, false
+		}
+		return m.RepoID, true
+	}
+	mux.Handle("GET /api/events", web.EventsHandler(queueSvc, repoID))
+	mux.Handle("GET /api/events/summary", web.EventSummaryHandler(queueSvc, repoID))
+	if metricsReg != nil {
+		mux.Handle("GET /metrics", metricsReg)
+	}
+
+	// Health check.
 	// Liveness: the process serves HTTP. Readiness: the database and every
 	// configured forge answer, so the queue can make progress.
 	mux.Handle("/readyz", &health.Readiness{
@@ -251,4 +273,22 @@ func run() error {
 	slog.Info("shutdown complete")
 
 	return nil
+}
+
+// pruneEvents deletes queue events older than retention, hourly.
+func pruneEvents(ctx context.Context, svc *queue.Service, retention time.Duration) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		if n, err := svc.PruneEvents(ctx, time.Now().Add(-retention)); err != nil {
+			slog.Warn("prune queue events failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned queue events", "deleted", n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

@@ -173,6 +173,10 @@ func HandleSuccess(ctx context.Context, deps *Deps, entry *pg.QueueEntry) error 
 
 	// The queue no longer waits for pending merge-branch checks.
 	merge.SkipPendingMirroredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrHeadSha)
+	deps.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: deps.RepoID, Kind: queue.EventPassed, PRNumber: entry.PrNumber,
+		TargetBranch: entry.TargetBranch, HeadSHA: entry.PrHeadSha,
+	})
 	return nil
 }
 
@@ -185,18 +189,18 @@ func HandleFailure(ctx context.Context, deps *Deps, entry *pg.QueueEntry, failed
 		checkRef = fmt.Sprintf("[%s](%s)", failedCheck, targetURL)
 	}
 
-	return removeFromQueue(ctx, deps, entry, pg.CheckStateFailure, desc,
-		fmt.Sprintf("❌ Removed from merge queue: Check failed: %s", checkRef))
+	return removeFromQueue(ctx, deps, entry, "check_failed", map[string]any{"check": failedCheck, "target_url": targetURL},
+		pg.CheckStateFailure, desc, fmt.Sprintf("❌ Removed from merge queue: Check failed: %s", checkRef))
 }
 
 func HandleTimeout(ctx context.Context, deps *Deps, entry *pg.QueueEntry) error {
 	slog.Info("check timeout exceeded", "pr", entry.PrNumber)
 
-	return removeFromQueue(ctx, deps, entry, pg.CheckStateError, "Check timeout exceeded",
+	return removeFromQueue(ctx, deps, entry, "check_timeout", nil, pg.CheckStateError, "Check timeout exceeded",
 		"⏰ Removed from merge queue: check timeout exceeded. Required checks did not complete in time.")
 }
 
-func removeFromQueue(ctx context.Context, deps *Deps, entry *pg.QueueEntry, statusState pg.CheckState, statusDesc, comment string) error {
+func removeFromQueue(ctx context.Context, deps *Deps, entry *pg.QueueEntry, reason string, detail map[string]any, statusState pg.CheckState, statusDesc, comment string) error {
 	targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
 	if err := deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{
 		State: statusState, Description: statusDesc, TargetURL: targetURL,
@@ -218,6 +222,10 @@ func removeFromQueue(ctx context.Context, deps *Deps, entry *pg.QueueEntry, stat
 		return err
 	}
 	merge.SkipPendingMirroredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrHeadSha)
+	deps.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: deps.RepoID, Kind: queue.EventEjected, PRNumber: entry.PrNumber,
+		TargetBranch: entry.TargetBranch, HeadSHA: entry.PrHeadSha, Reason: reason, Detail: detail,
+	})
 
 	return nil
 }

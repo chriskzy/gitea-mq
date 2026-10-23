@@ -90,6 +90,8 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_DISCOVERY_INTERVAL` | no | `5m` | How often to re-scan Gitea topics and GitHub installations |
 | `GITEA_MQ_CACHE_DIR` | no | `$XDG_CACHE_HOME/gitea-mq` | Directory for persistent bare git clones used for merge operations; unused repos are removed after 30 days |
 | `GITEA_MQ_LOG_LEVEL` | no | `info` | Log level: debug, info, warn, error |
+| `GITEA_MQ_METRICS` | no | `false` | Serve in-memory event counters in Prometheus format at `/metrics` (see [Queue events](#queue-events)) |
+| `GITEA_MQ_EVENT_RETENTION` | no | `2160h` | How long queue events are kept in PostgreSQL (90 days) |
 
 ## Batching (bors-style)
 
@@ -139,6 +141,37 @@ fast-forwarding the target, which bypasses that check. gitea-mq enforces it:
 
 The token must be able to read every repository a dependency may point to, as
 Gitea omits unreadable ones.
+
+## Queue events
+
+Every queue transition is appended to a `queue_events` table in the same
+PostgreSQL database, so queue behaviour can be measured after the fact: how
+long PRs wait, why they are ejected, how many builds bisection costs.
+
+| Kind | Meaning |
+|---|---|
+| `enqueued` | PR entered the queue (`reason`: automerge detection / merge label) |
+| `testing_started` | Merge branch built (per PR), or batch build N started (per batch) |
+| `passed` | Merge branch green (`reason=up_to_date` when the run was skipped) |
+| `merged` | PR landed (`reason=batch` for batches) |
+| `ejected` | gitea-mq removed the PR; `reason` is one of `check_failed`, `check_timeout`, `testing_timeout`, `success_timeout`, `merge_conflict`, `merge_error`, `pushed`, `retargeted`, `blocked`, `target_moved`, `push_denied`, `bisect_limit` |
+| `removed` | PR left on its own (`reason`: `closed`, `cancelled`) |
+| `batch_formed`, `batch_bisected`, `batch_landed` | Batch lifecycle; `detail` carries member counts and the build number |
+
+Read-only JSON endpoints:
+
+- `GET /api/events` with optional `repo=<forge>:<owner>/<name>`, `kind`,
+  `since` (duration such as `24h`, or RFC3339), `after=<id>` and `limit`
+  (default 100, max 1000). Events come in id order with a `next_after`
+  cursor, so a consumer can follow ejections by polling
+  `/api/events?kind=ejected&after=<last id>`.
+- `GET /api/events/summary?since=24h` counts events per repo, kind and
+  reason.
+
+With `GITEA_MQ_METRICS=true`, `/metrics` exposes the same events as the
+counter `gitea_mq_events_total{repo,kind,reason}`. It is kept in memory and
+resets on restart; use the API for durable numbers. Events older than
+`GITEA_MQ_EVENT_RETENTION` are pruned hourly.
 
 ## Repo selection
 
@@ -424,6 +457,8 @@ Real-world deployments:
 | `refreshInterval` | string | `10s` | Dashboard refresh interval |
 | `discoveryInterval` | string | `5m` | How often to re-discover repos by topic |
 | `logLevel` | enum | `info` | Log level |
+| `metrics` | bool | `false` | Serve in-memory event counters at `/metrics` |
+| `eventRetention` | string | `2160h` | How long queue events are kept |
 
 ## Development
 

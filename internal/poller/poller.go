@@ -95,6 +95,8 @@ type PollResult struct {
 }
 
 type removeOpts struct {
+	// reason is recorded on the queue event (e.g. "pushed", "closed").
+	reason       string
 	cancelIntent bool
 	comment      string
 	advance      bool
@@ -120,6 +122,15 @@ func removePR(ctx context.Context, deps *Deps, result *PollResult, entry *pg.Que
 		merge.CleanupMergeBranch(ctx, deps.Forge, deps.Owner, deps.Repo, entry)
 	}
 
+	deps.Queue.RecordEvent(ctx, queue.Event{
+		RepoID:       deps.RepoID,
+		Kind:         removalEventKind(opts.reason),
+		PRNumber:     entry.PrNumber,
+		TargetBranch: entry.TargetBranch,
+		HeadSHA:      entry.PrHeadSha,
+		Reason:       opts.reason,
+	})
+
 	result.Dequeued = append(result.Dequeued, entry.PrNumber)
 	if opts.advance {
 		result.Advanced = append(result.Advanced, entry.PrNumber)
@@ -127,6 +138,19 @@ func removePR(ctx context.Context, deps *Deps, result *PollResult, entry *pg.Que
 
 	slog.Info(opts.logMsg, append([]any{"pr", entry.PrNumber}, opts.logAttrs...)...)
 	return nil
+}
+
+// removalEventKind distinguishes a PR leaving on its own (merged, closed,
+// intent withdrawn) from gitea-mq ejecting it.
+func removalEventKind(reason string) queue.EventKind {
+	switch reason {
+	case "merged":
+		return queue.EventMerged
+	case "closed", "cancelled":
+		return queue.EventRemoved
+	default:
+		return queue.EventEjected
+	}
 }
 
 func (deps *Deps) isPriority(pr *forge.PR) bool {
@@ -354,6 +378,15 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 	}
 
 	if enqResult.IsNew {
+		deps.Queue.RecordEvent(ctx, queue.Event{
+			RepoID:       deps.RepoID,
+			Kind:         queue.EventEnqueued,
+			PRNumber:     pr.Number,
+			TargetBranch: targetBranch,
+			HeadSHA:      pr.HeadSHA,
+			Reason:       source,
+			Detail:       map[string]any{"position": enqResult.Position, "priority": deps.isPriority(pr)},
+		})
 		delete(deps.blockedStatus, pr.HeadSHA)
 		desc := fmt.Sprintf("Queued (position #%d)", enqResult.Position)
 		targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, pr.Number)
@@ -578,6 +611,7 @@ func reconcileEntries(ctx context.Context, deps *Deps, result *PollResult, openP
 			if !c.when {
 				continue
 			}
+			c.opts.reason = c.label
 			if err := removePR(ctx, deps, result, &entry, c.opts); err != nil {
 				result.Errors = append(result.Errors, fmt.Errorf("dequeue %s PR #%d: %w", c.label, entry.PrNumber, err))
 			}
@@ -627,6 +661,7 @@ func handleSuccessTimeout(ctx context.Context, deps *Deps, result *PollResult, e
 	}
 
 	removeTimedOut(ctx, deps, result, entry, timedOutRemoval{
+		reason:            "success_timeout",
 		statusDescription: "Merge did not complete in time",
 		errorMessage:      "merge did not complete in time",
 		comment:           "⚠️ Removed from merge queue: PR was marked as ready to merge but the forge did not merge it in time. This may indicate a branch protection issue.",
@@ -650,6 +685,7 @@ func handleTestingTimeout(ctx context.Context, deps *Deps, result *PollResult, e
 
 	merge.CleanupMergeBranch(ctx, deps.Forge, deps.Owner, deps.Repo, entry)
 	removeTimedOut(ctx, deps, result, entry, timedOutRemoval{
+		reason:            "testing_timeout",
 		statusDescription: "CI did not report within timeout",
 		errorMessage:      "CI did not report within timeout",
 		comment:           "⚠️ Removed from merge queue: CI did not report a status within the timeout. The CI server may have lost the build.",
@@ -665,6 +701,7 @@ func timedOut(now time.Time, ts pgtype.Timestamptz, timeout time.Duration) bool 
 
 // timedOutRemoval describes how a timed-out entry is reported before removal.
 type timedOutRemoval struct {
+	reason            string // queue event reason
 	statusDescription string // MQ commit status shown on the PR head
 	errorMessage      string // stored on the queue entry
 	comment           string // posted on the PR
@@ -681,6 +718,7 @@ func removeTimedOut(ctx context.Context, deps *Deps, result *PollResult, entry *
 	logutil.WarnIfErr(deps.Queue.SetError(ctx, deps.RepoID, entry.PrNumber, opts.errorMessage), "set queue error failed", "pr", entry.PrNumber)
 
 	if err := removePR(ctx, deps, result, entry, removeOpts{
+		reason:       opts.reason,
 		cancelIntent: true,
 		comment:      opts.comment,
 		advance:      true,
@@ -765,6 +803,10 @@ func tryFastForwardSuccess(ctx context.Context, deps *Deps, result *PollResult, 
 		return true
 	}
 	merge.SkipPendingMirroredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, head.PrHeadSha)
+	deps.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: deps.RepoID, Kind: queue.EventPassed, PRNumber: head.PrNumber,
+		TargetBranch: head.TargetBranch, HeadSHA: head.PrHeadSha, Reason: "up_to_date",
+	})
 	slog.Info("skipped merge-branch testing: PR already up to date with target", "pr", head.PrNumber)
 	return true
 }
@@ -883,6 +925,7 @@ func holdIfBlocked(ctx context.Context, deps *Deps, result *PollResult, entry *p
 	}
 
 	if err := removePR(ctx, deps, result, entry, removeOpts{
+		reason:   "blocked",
 		comment:  forge.BlockedComment(blockers, deps.Owner, deps.Repo),
 		advance:  true,
 		logMsg:   "removed PR blocked by an open dependency",

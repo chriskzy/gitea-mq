@@ -54,6 +54,7 @@ func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner,
 		if err := svc.Dequeue(ctx, repoID, entry.PrNumber); err != nil {
 			return nil, fmt.Errorf("dequeue conflicting PR #%d: %w", entry.PrNumber, err)
 		}
+		svc.RecordEvent(ctx, ejectEvent(repoID, entry, "merge_conflict", nil))
 		SkipPendingMirroredChecks(ctx, f, owner, repo, entry.PrHeadSha)
 		return &StartTestingResult{Removed: true}, nil
 	}
@@ -73,6 +74,7 @@ func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner,
 		if err := svc.Dequeue(ctx, repoID, entry.PrNumber); err != nil {
 			return nil, fmt.Errorf("dequeue PR #%d after merge error: %w", entry.PrNumber, err)
 		}
+		svc.RecordEvent(ctx, ejectEvent(repoID, entry, "merge_error", map[string]any{"error": err.Error()}))
 		SkipPendingMirroredChecks(ctx, f, owner, repo, entry.PrHeadSha)
 		return &StartTestingResult{Removed: true}, nil
 	}
@@ -92,9 +94,22 @@ func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner,
 		State: pg.CheckStatePending, Description: "Testing merge result", TargetURL: targetURL,
 	}), "set mq status failed", "pr", entry.PrNumber)
 
+	svc.RecordEvent(ctx, queue.Event{
+		RepoID: repoID, Kind: queue.EventTestingStarted, PRNumber: entry.PrNumber,
+		TargetBranch: entry.TargetBranch, HeadSHA: entry.PrHeadSha,
+		Detail: map[string]any{"branch": branchName, "sha": mergeSHA},
+	})
 	slog.Info("started testing", "pr", entry.PrNumber, "branch", branchName, "sha", mergeSHA)
 
 	return &StartTestingResult{MergeBranchName: branchName, MergeBranchSHA: mergeSHA}, nil
+}
+
+// ejectEvent is the queue event for gitea-mq removing entry for reason.
+func ejectEvent(repoID int64, entry *pg.QueueEntry, reason string, detail map[string]any) queue.Event {
+	return queue.Event{
+		RepoID: repoID, Kind: queue.EventEjected, PRNumber: entry.PrNumber,
+		TargetBranch: entry.TargetBranch, HeadSHA: entry.PrHeadSha, Reason: reason, Detail: detail,
+	}
 }
 
 // SkipPendingMirroredChecks closes mirrored checks after the queue stops

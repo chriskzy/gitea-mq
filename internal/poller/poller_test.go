@@ -3,6 +3,7 @@ package poller_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -711,5 +712,85 @@ func TestPollOnce_ChecksFromConfig(t *testing.T) {
 	}
 	if e, _ := svc.GetEntry(ctx, repoID, 42); e == nil {
 		t.Fatal("not enqueued once configured check passed")
+	}
+}
+
+// A downstream consumer (e.g. a dispatcher notifying authors) follows
+// ejections through the event log; each removal must carry its reason.
+func TestPollOnce_RecordsEvents(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	mockAutomergePRs(mock, makePR(42, "sha42", "main"))
+	mock.MergeBranchesFn = func(_ context.Context, _, _, _, _, _ string) (*gitea.MergeResult, error) {
+		return &gitea.MergeResult{SHA: "merge-sha"}, nil
+	}
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+
+	// New push → ejected with reason "pushed".
+	mockAutomergePRs(mock, makePR(42, "newsha", "main"))
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+
+	evs, err := svc.ListEvents(ctx, queue.EventFilter{RepoID: repoID, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, ev := range evs {
+		got = append(got, ev.Kind+":"+ev.Reason)
+	}
+	want := []string{"enqueued:automerge detection", "testing_started:", "ejected:pushed"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+func draftPR(index int64, headSHA, baseBranch string) gitea.PR {
+	pr := makePR(index, headSHA, baseBranch)
+	pr.Draft = true
+	return pr
+}
+
+// A draft with armed automerge or the merge label must not land; it waits
+// with an explanatory status and is queued once marked ready.
+func TestPollOnce_DraftNotEnqueued(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	mockAutomergePRs(mock, draftPR(42, "sha42", "main"))
+
+	for range 2 {
+		result, err := poller.PollOnce(ctx, deps)
+		if err != nil {
+			t.Fatalf("PollOnce: %v", err)
+		}
+		if len(result.Enqueued) != 0 {
+			t.Fatalf("draft PR enqueued: %v", result.Enqueued)
+		}
+	}
+	if entry, _ := svc.GetEntry(ctx, repoID, 42); entry != nil {
+		t.Fatalf("draft PR has queue entry %+v", entry)
+	}
+	calls := mock.CallsTo("CreateCommitStatus")
+	if len(calls) != 1 {
+		t.Fatalf("expected one waiting status across polls, got %d", len(calls))
+	}
+	if st := calls[0].Args[3].(gitea.CommitStatus); st.State != "pending" || !strings.Contains(st.Description, "Draft") {
+		t.Fatalf("unexpected status %+v", st)
+	}
+	if n := len(mock.CallsTo("CancelAutoMerge")); n != 0 {
+		t.Fatalf("draft must keep merge intent, got %d CancelAutoMerge calls", n)
+	}
+
+	mockAutomergePRs(mock, makePR(42, "sha42", "main"))
+	mock.MergeBranchesFn = func(_ context.Context, _, _, _, _, _ string) (*gitea.MergeResult, error) {
+		return &gitea.MergeResult{SHA: "merge-sha"}, nil
+	}
+	result, err := poller.PollOnce(ctx, deps)
+	if err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+	if len(result.Enqueued) != 1 {
+		t.Fatalf("ready PR not enqueued: %v", result.Enqueued)
 	}
 }

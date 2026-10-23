@@ -213,6 +213,18 @@ in
       description = "How often to re-discover repos by topic. Only used when topic is set.";
     };
 
+    metrics = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Serve in-memory queue event counters in Prometheus format at /metrics.";
+    };
+
+    eventRetention = lib.mkOption {
+      type = lib.types.str;
+      default = "2160h";
+      description = "How long queue events are kept in PostgreSQL.";
+    };
+
     logLevel = lib.mkOption {
       type = lib.types.enum [
         "debug"
@@ -318,6 +330,8 @@ in
         GITEA_MQ_REFRESH_INTERVAL = cfg.refreshInterval;
         GITEA_MQ_DISCOVERY_INTERVAL = cfg.discoveryInterval;
         GITEA_MQ_LOG_LEVEL = cfg.logLevel;
+        GITEA_MQ_METRICS = lib.boolToString cfg.metrics;
+        GITEA_MQ_EVENT_RETENTION = cfg.eventRetention;
         GITEA_MQ_CACHE_DIR = "/var/cache/gitea-mq";
       }
       // lib.optionalAttrs (cfg.repos != [ ]) {
