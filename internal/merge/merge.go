@@ -109,6 +109,7 @@ func ejectEvent(repoID int64, entry *pg.QueueEntry, reason string, detail map[st
 	return queue.Event{
 		RepoID: repoID, Kind: queue.EventEjected, PRNumber: entry.PrNumber,
 		TargetBranch: entry.TargetBranch, HeadSHA: entry.PrHeadSha, Reason: reason, Detail: detail,
+		EnqueuedAt: entry.EnqueuedAt.Time,
 	}
 }
 

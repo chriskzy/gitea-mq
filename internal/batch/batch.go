@@ -347,6 +347,7 @@ func (e *Engine) HandlePass(ctx context.Context, b *pg.Batch) error {
 		e.Queue.RecordEvent(ctx, queue.Event{
 			RepoID: e.RepoID, Kind: queue.EventMerged, PRNumber: ent.PrNumber, BatchID: b.ID,
 			TargetBranch: b.TargetBranch, HeadSHA: ent.PrHeadSha, Reason: "batch",
+			EnqueuedAt: ent.EnqueuedAt.Time,
 		})
 	}
 
@@ -623,7 +624,8 @@ func (e *Engine) eject(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, rea
 	e.Queue.RecordEvent(ctx, queue.Event{
 		RepoID: e.RepoID, Kind: queue.EventEjected, PRNumber: ent.PrNumber, BatchID: b.ID,
 		TargetBranch: b.TargetBranch, HeadSHA: ent.PrHeadSha, Reason: reason,
-		Detail: map[string]any{"status": statusDesc},
+		Detail:     map[string]any{"status": statusDesc},
+		EnqueuedAt: ent.EnqueuedAt.Time,
 	})
 }
 
