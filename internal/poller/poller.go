@@ -138,6 +138,7 @@ func removePR(ctx context.Context, deps *Deps, result *PollResult, entry *pg.Que
 		PRNumber:     entry.PrNumber,
 		TargetBranch: entry.TargetBranch,
 		HeadSHA:      entry.PrHeadSha,
+		EnqueuedAt:   entry.EnqueuedAt.Time,
 		Reason:       opts.reason,
 	})
 
