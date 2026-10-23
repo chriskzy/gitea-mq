@@ -18,6 +18,7 @@ import (
 	"github.com/Mic92/gitea-mq/internal/github"
 	"github.com/Mic92/gitea-mq/internal/health"
 	"github.com/Mic92/gitea-mq/internal/metrics"
+	"github.com/Mic92/gitea-mq/internal/notify"
 	"github.com/Mic92/gitea-mq/internal/queue"
 	"github.com/Mic92/gitea-mq/internal/registry"
 	"github.com/Mic92/gitea-mq/internal/store/pg"
@@ -94,6 +95,12 @@ func run() error {
 		queueSvc.OnEvent(metricsReg.Observe)
 	}
 	go pruneEvents(ctx, queueSvc, cfg.EventRetention)
+	if cfg.NotifyURL != "" {
+		n := notify.New(cfg.NotifyURL, []byte(cfg.NotifySecret), cfg.NotifyEvents)
+		queueSvc.OnEvent(n.Observe)
+		go n.Run(ctx)
+		slog.Info("queue event notifications enabled", "events", cfg.NotifyEvents)
+	}
 	forges := forge.NewSet()
 	var discSources []discovery.Source
 

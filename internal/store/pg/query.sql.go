@@ -405,9 +405,10 @@ func (q *Queries) GetQueueEntry(ctx context.Context, arg GetQueueEntryParams) (Q
 	return i, err
 }
 
-const insertEvent = `-- name: InsertEvent :exec
+const insertEvent = `-- name: InsertEvent :one
 INSERT INTO queue_events (repo_id, kind, pr_number, batch_id, target_branch, head_sha, reason, detail)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, created_at
 `
 
 type InsertEventParams struct {
@@ -421,8 +422,13 @@ type InsertEventParams struct {
 	Detail       []byte      `json:"detail"`
 }
 
-func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error {
-	_, err := q.db.Exec(ctx, insertEvent,
+type InsertEventRow struct {
+	ID        int64              `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (InsertEventRow, error) {
+	row := q.db.QueryRow(ctx, insertEvent,
 		arg.RepoID,
 		arg.Kind,
 		arg.PrNumber,
@@ -432,7 +438,9 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 		arg.Reason,
 		arg.Detail,
 	)
-	return err
+	var i InsertEventRow
+	err := row.Scan(&i.ID, &i.CreatedAt)
+	return i, err
 }
 
 const listActiveEntriesByRepo = `-- name: ListActiveEntriesByRepo :many

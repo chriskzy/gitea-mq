@@ -147,9 +147,10 @@ RETURNING *;
 UPDATE batches SET state = 'cancelled'
 WHERE id IN (SELECT l.id FROM batches l WHERE l.repo_id = $1 AND l.state IN ('forming', 'testing') ORDER BY l.id FOR UPDATE);
 
--- name: InsertEvent :exec
+-- name: InsertEvent :one
 INSERT INTO queue_events (repo_id, kind, pr_number, batch_id, target_branch, head_sha, reason, detail)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, created_at;
 
 -- name: ListEvents :many
 SELECT e.id, e.kind, e.pr_number, e.batch_id, e.target_branch, e.head_sha, e.reason, e.detail, e.created_at,
