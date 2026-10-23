@@ -119,8 +119,13 @@ Trade-offs and prerequisites:
 - A semantic conflict between two PRs that bisection puts in different halves
   can land both (each half passes alone). This matches bors-ng; keep
   `BATCH_MAX` modest if it bothers you.
-- If the forge does not detect a PR as merged within ~10s of the fast-forward,
-  gitea-mq closes it with a "Merged as `<sha>`" comment.
+- On Gitea, gitea-mq records each landed PR as merged by the batch SHA
+  ("manually merged") right after the fast-forward. This needs the
+  repository setting *Allow manual merge* (`allow_manual_merge`) and the
+  token's user being allowed to merge under branch protection. Without it, or
+  if the call fails, gitea-mq falls back to waiting ~10s for the forge to
+  detect the merge and otherwise closes the PR with a "Merged as `<sha>`"
+  comment.
 
 ## Draft PRs
 

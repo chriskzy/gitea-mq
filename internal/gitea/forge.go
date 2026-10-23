@@ -40,6 +40,7 @@ var (
 	_ forge.DependencyResolver = (*giteaForge)(nil)
 	_ forge.ReviewResolver     = (*giteaForge)(nil)
 	_ forge.ApprovalRequirer   = (*giteaForge)(nil)
+	_ forge.ManualMerger       = (*giteaForge)(nil)
 )
 
 // StackMerges builds the batch branch in one clone instead of one per member.
@@ -375,4 +376,8 @@ func (f *giteaForge) RequiredApprovals(ctx context.Context, owner, name, branch 
 		return 0, err
 	}
 	return bp.RequiredApprovals, nil
+}
+
+func (f *giteaForge) MarkMerged(ctx context.Context, owner, name string, number int64, sha string) error {
+	return f.client.MarkManuallyMerged(ctx, owner, name, number, sha)
 }
