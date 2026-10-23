@@ -3,8 +3,15 @@
   pkgs,
   gitea-mq,
   imageName ? "${gitea-mq.pname}:latest",
+  # Source commit and commit time (YYYYMMDDHHMMSS) for the OCI labels.
+  revision ? null,
+  lastModifiedDate ? null,
 }:
 let
+  d = lastModifiedDate;
+  created =
+    "${builtins.substring 0 4 d}-${builtins.substring 4 2 d}-${builtins.substring 6 2 d}"
+    + "T${builtins.substring 8 2 d}:${builtins.substring 10 2 d}:${builtins.substring 12 2 d}Z";
   allPlatforms = {
     "x86_64-linux" = {
       GOOS = "linux";
@@ -67,14 +74,21 @@ let
         ExposedPorts = {
           "8080" = { };
         };
-        # Static OCI labels so locally built images are self-describing. CI
-        # adds the per-build ones (revision, created, version tag) on push.
+        # OCI labels so any image, local or CI-built, names its source commit.
+        # CI additionally applies docker/metadata-action's labels on push.
         Labels = {
           "org.opencontainers.image.title" = gitea-mq.pname;
           "org.opencontainers.image.description" = "Merge queue for Gitea and GitHub";
           "org.opencontainers.image.version" = gitea-mq.version;
           "org.opencontainers.image.licenses" = "MIT";
           "org.opencontainers.image.source" = "https://github.com/Mic92/gitea-mq";
+        }
+        // lib.optionalAttrs (revision != null) {
+          "org.opencontainers.image.revision" = revision;
+        }
+        // lib.optionalAttrs (lastModifiedDate != null) {
+          # Commit time, not build time, so the image stays reproducible.
+          "org.opencontainers.image.created" = created;
         };
       };
     }
