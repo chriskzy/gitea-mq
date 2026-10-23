@@ -632,11 +632,25 @@ func (e *Engine) ejectCurrent(ctx context.Context, b *pg.Batch, reason string, s
 	b.CurrentIds = nil
 }
 
-// ensureMergedOrClose waits briefly for the forge to notice the PR's head is
-// reachable from the target branch. If it does not, the PR is closed with a
-// comment carrying the landing SHA. The forge's merge endpoint is never
-// called: that could mint a second merge commit on top of the tested SHA.
+// ensureMergedOrClose marks the PR merged by sha when the forge supports it
+// (ManualMerger). Otherwise it waits briefly for the forge to notice the PR's
+// head is reachable from the target branch and, if it does not, closes the PR
+// with a comment carrying the landing SHA. The forge's regular merge endpoint
+// is never called: that could mint a second merge commit on top of the
+// tested SHA.
 func (e *Engine) ensureMergedOrClose(ctx context.Context, ent *pg.QueueEntry, sha string, batchID int64) {
+	// Record the landing explicitly where the forge allows it, so the PR
+	// shows as merged by the tested SHA rather than racing the forge's
+	// background merge detection. On failure (e.g. manual merge disabled
+	// for the repo, or the forge already detected it) fall through.
+	if mm, ok := e.Forge.(forge.ManualMerger); ok {
+		err := mm.MarkMerged(ctx, e.Owner, e.Repo, ent.PrNumber, sha)
+		if err == nil {
+			return
+		}
+		slog.Info("mark batch member merged failed, waiting for merge detection",
+			"pr", ent.PrNumber, "batch", batchID, "error", err)
+	}
 	interval := cmp.Or(e.MergedPollInterval, 200*time.Millisecond)
 	for range cmp.Or(e.MergedPollAttempts, 50) {
 		pr, err := e.Forge.GetPR(ctx, e.Owner, e.Repo, ent.PrNumber)

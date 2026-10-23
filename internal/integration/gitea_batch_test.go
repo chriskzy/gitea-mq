@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -197,4 +198,70 @@ func hasBranch(br []gitea.Branch, name string) bool {
 		}
 	}
 	return false
+}
+
+// MarkMerged must record a fast-forwarded PR as merged by the landed SHA on a
+// real Gitea, and fail cleanly (so the engine falls back) when the repository
+// does not allow manual merges.
+func TestGitea_MarkMerged(t *testing.T) {
+	gs := testutil.GiteaInstance()
+	if gs == nil {
+		t.Skip("gitea server not available")
+	}
+	ctx := t.Context()
+	api := testutil.NewGiteaAPI(gs.URL)
+	api.CreateToken(t)
+	c := gitea.NewHTTPClient(gs.URL, api.Token)
+	f := gitea.NewForge(c, gs.URL)
+	mm := f.(interface {
+		MarkMerged(ctx context.Context, owner, name string, number int64, sha string) error
+	})
+
+	const repoName = "mark-merged"
+	api.MustDo(t, "POST", "/user/repos",
+		`{"name": "`+repoName+`", "auto_init": false, "default_branch": "main"}`)
+	if err := gs.PatchRepoHooks("testuser", repoName); err != nil {
+		t.Fatalf("patch hooks: %v", err)
+	}
+	api.MustDo(t, "POST", "/repos/testuser/"+repoName+"/contents/README.md",
+		`{"content": "aW5pdA==", "message": "init"}`)
+	api.MustDo(t, "POST", "/repos/testuser/"+repoName+"/contents/a.txt",
+		`{"content": "YQ==", "message": "a", "new_branch": "feature"}`)
+	var p struct {
+		Number int64 `json:"number"`
+		Head   struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	_ = json.Unmarshal(api.MustDo(t, "POST", "/repos/testuser/"+repoName+"/pulls",
+		`{"title": "feature", "head": "feature", "base": "main"}`), &p)
+
+	// Land the PR head the way a batch does: fast-forward main to it.
+	if err := f.FastForward(ctx, "testuser", repoName, "main", p.Head.SHA); err != nil {
+		t.Fatalf("fast-forward: %v", err)
+	}
+
+	if err := mm.MarkMerged(ctx, "testuser", repoName, p.Number, p.Head.SHA); err == nil {
+		got, _ := c.GetPR(ctx, "testuser", repoName, p.Number)
+		if !got.HasMerged {
+			t.Fatal("manual merge disabled but call succeeded without merging")
+		}
+		t.Log("Gitea auto-detected the merge before MarkMerged; nothing left to refuse")
+	}
+
+	api.MustDo(t, "PATCH", "/repos/testuser/"+repoName, `{"allow_manual_merge": true}`)
+	got, _ := c.GetPR(ctx, "testuser", repoName, p.Number)
+	if !got.HasMerged {
+		if err := mm.MarkMerged(ctx, "testuser", repoName, p.Number, p.Head.SHA); err != nil {
+			t.Fatalf("MarkMerged with manual merge allowed: %v", err)
+		}
+	}
+	var after struct {
+		Merged         bool   `json:"merged"`
+		MergeCommitSHA string `json:"merge_commit_sha"`
+	}
+	_ = json.Unmarshal(api.MustDo(t, "GET", "/repos/testuser/"+repoName+"/pulls/"+itoa(p.Number), ""), &after)
+	if !after.Merged || after.MergeCommitSHA != p.Head.SHA {
+		t.Fatalf("PR merged=%v merge_commit_sha=%q, want true/%q", after.Merged, after.MergeCommitSHA, p.Head.SHA)
+	}
 }

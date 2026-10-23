@@ -38,6 +38,7 @@ var (
 	_ forge.Forge              = (*giteaForge)(nil)
 	_ forge.MergeStacker       = (*giteaForge)(nil)
 	_ forge.DependencyResolver = (*giteaForge)(nil)
+	_ forge.ManualMerger       = (*giteaForge)(nil)
 )
 
 // StackMerges builds the batch branch in one clone instead of one per member.
@@ -343,4 +344,8 @@ func (f *giteaForge) OpenDependencies(ctx context.Context, owner, name string, n
 		open = append(open, d)
 	}
 	return open, nil
+}
+
+func (f *giteaForge) MarkMerged(ctx context.Context, owner, name string, number int64, sha string) error {
+	return f.client.MarkManuallyMerged(ctx, owner, name, number, sha)
 }
