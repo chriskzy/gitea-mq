@@ -46,11 +46,14 @@ type Config struct {
 	ChecksFromConfig bool
 	// AutoSetup lets gitea-mq edit branch protection and webhooks on startup.
 	AutoSetup bool
-	// RequiredApprovals keeps PRs out of the queue until approved; 0 = off.
+	// RequireApproval keeps PRs out of the queue until approved.
+	RequireApproval bool
+	// RequiredApprovals is how many approvals are needed; 0 = from branch
+	// protection when readable, else 1.
 	RequiredApprovals int
-	// ApprovalIsIntent lets an approved PR enter the queue without automerge
-	// or the merge label.
-	ApprovalIsIntent bool
+	// EnqueueOnApproval lets an approved PR enter the queue without
+	// automerge or the merge label. Implies RequireApproval.
+	EnqueueOnApproval bool
 }
 
 type GiteaConfig struct {
@@ -218,17 +221,21 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.RequireApproval, err = parseBool("GITEA_MQ_REQUIRE_APPROVAL", false)
+	if err != nil {
+		return nil, err
+	}
 	cfg.RequiredApprovals, err = parseInt("GITEA_MQ_REQUIRED_APPROVALS", 0, 0)
 	if err != nil {
 		return nil, err
 	}
-	cfg.ApprovalIsIntent, err = parseBool("GITEA_MQ_APPROVAL_IS_INTENT", false)
+	cfg.EnqueueOnApproval, err = parseBool("GITEA_MQ_ENQUEUE_ON_APPROVAL", false)
 	if err != nil {
 		return nil, err
 	}
-	// Approval as intent implies approval is required.
-	if cfg.ApprovalIsIntent && cfg.RequiredApprovals == 0 {
-		cfg.RequiredApprovals = 1
+	// Approval as intent only makes sense when approval is checked.
+	if cfg.EnqueueOnApproval {
+		cfg.RequireApproval = true
 	}
 
 	cfg.CacheDir = os.Getenv("GITEA_MQ_CACHE_DIR")

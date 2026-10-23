@@ -67,8 +67,9 @@ func run() error {
 		"batch_max", cfg.BatchMax,
 		"auto_setup", cfg.AutoSetup,
 		"checks_from_config", cfg.ChecksFromConfig,
+		"require_approval", cfg.RequireApproval,
 		"required_approvals", cfg.RequiredApprovals,
-		"approval_is_intent", cfg.ApprovalIsIntent,
+		"enqueue_on_approval", cfg.EnqueueOnApproval,
 	)
 	if cfg.ChecksFromConfig && len(cfg.RequiredChecks) == 0 {
 		slog.Warn("GITEA_MQ_REQUIRED_CHECKS_SOURCE=config but GITEA_MQ_REQUIRED_CHECKS is empty: any single passing status will let a merge branch pass")
@@ -136,20 +137,23 @@ func run() error {
 
 	// Create the repo registry — central coordination for managed repos.
 	reg := registry.New(ctx, &registry.Deps{
-		Forges:              forges,
-		Queue:               queueSvc,
-		WebhookSecret:       giteaWebhookSecret,
-		ExternalURL:         cfg.ExternalURL,
-		PollInterval:        cfg.PollInterval,
-		IdlePollInterval:    cfg.IdlePollInterval,
-		CheckTimeout:        cfg.CheckTimeout,
-		FallbackChecks:      cfg.RequiredChecks,
-		ChecksFromConfig:    cfg.ChecksFromConfig,
-		SkipSetup:           !cfg.AutoSetup,
-		MergeLabel:          cfg.MergeLabel,
-		PriorityLabel:       cfg.PriorityLabel,
-		RequiredApprovals:   cfg.RequiredApprovals,
-		ApprovalIsIntent:    cfg.ApprovalIsIntent,
+		Forges:           forges,
+		Queue:            queueSvc,
+		WebhookSecret:    giteaWebhookSecret,
+		ExternalURL:      cfg.ExternalURL,
+		PollInterval:     cfg.PollInterval,
+		IdlePollInterval: cfg.IdlePollInterval,
+		CheckTimeout:     cfg.CheckTimeout,
+		FallbackChecks:   cfg.RequiredChecks,
+		ChecksFromConfig: cfg.ChecksFromConfig,
+		SkipSetup:        !cfg.AutoSetup,
+		MergeLabel:       cfg.MergeLabel,
+		PriorityLabel:    cfg.PriorityLabel,
+		Approval: forge.ApprovalPolicy{
+			Require:    cfg.RequireApproval,
+			Count:      cfg.RequiredApprovals,
+			OnApproval: cfg.EnqueueOnApproval,
+		},
 		LabelPrefix:         cfg.LabelPrefix,
 		SuccessTimeout:      5 * time.Minute,
 		SkipQueueIfUpToDate: cfg.SkipQueueIfUpToDate,

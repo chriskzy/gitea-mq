@@ -38,12 +38,9 @@ type Deps struct {
 	MergeLabel string
 	// PriorityLabel sorts queued PRs carrying it ahead of others; empty disables.
 	PriorityLabel string
-	// RequiredApprovals holds PRs back until they have this many approvals
-	// and no outstanding change request; 0 disables the check.
-	RequiredApprovals int
-	// ApprovalIsIntent treats an approved PR as merge intent, so neither
-	// automerge nor the merge label is needed.
-	ApprovalIsIntent bool
+	// Approval holds PRs back until approved and, with OnApproval, treats
+	// approval as merge intent so neither automerge nor the label is needed.
+	Approval forge.ApprovalPolicy
 	// SuccessTimeout is how long a PR may sit in "success" without merging
 	// before we assume the forge's auto-merge failed.
 	SuccessTimeout time.Duration
@@ -414,26 +411,23 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 	}
 }
 
-// sourceApproval marks enqueues triggered by ApprovalIsIntent, whose reviews
-// were already checked.
+// sourceApproval marks enqueues triggered by Approval.OnApproval, whose
+// reviews were already checked.
 const sourceApproval = "approval"
 
 // approvalGate reports whether pr has the required approvals, posting a
 // waiting status when it does not. Always true when approvals are not
 // required.
 func approvalGate(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR) bool {
-	if deps.RequiredApprovals <= 0 {
-		return true
-	}
-	rv, err := forge.GetReviews(ctx, deps.Forge, deps.Owner, deps.Repo, pr.Number)
+	ok, rv, needed, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, pr.BaseBranch, pr.Number)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("get reviews of PR #%d: %w", pr.Number, err))
 		return false
 	}
-	if rv.Approved(deps.RequiredApprovals) {
+	if ok {
 		return true
 	}
-	desc := fmt.Sprintf("Waiting for approval (%d/%d)", rv.Approvals, deps.RequiredApprovals)
+	desc := fmt.Sprintf("Waiting for approval (%d/%d)", rv.Approvals, needed)
 	if rv.ChangesRequested {
 		desc = "Changes requested: waiting for approval"
 	}
@@ -445,7 +439,7 @@ func approvalGate(ctx context.Context, deps *Deps, result *PollResult, pr *forge
 // when approval counts as merge intent. Reviews are checked before CI so the
 // common case (an open, unapproved PR) costs one request and posts nothing.
 func enqueueApprovedPRs(ctx context.Context, deps *Deps, result *PollResult, openPRs []forge.PR) {
-	if !deps.ApprovalIsIntent {
+	if !deps.Approval.OnApproval {
 		return
 	}
 	for i := range openPRs {
@@ -461,12 +455,12 @@ func enqueueApprovedPRs(ctx context.Context, deps *Deps, result *PollResult, ope
 		if existing != nil {
 			continue
 		}
-		rv, err := forge.GetReviews(ctx, deps.Forge, deps.Owner, deps.Repo, pr.Number)
+		ok, _, _, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, pr.BaseBranch, pr.Number)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("get reviews of PR #%d: %w", pr.Number, err))
 			continue
 		}
-		if !rv.Approved(deps.RequiredApprovals) {
+		if !ok {
 			continue
 		}
 		enqueuePR(ctx, deps, result, pr, pr.BaseBranch, sourceApproval)
@@ -574,7 +568,7 @@ func finalizeLabeledMerge(ctx context.Context, deps *Deps, result *PollResult, e
 		return
 	}
 	labeled := deps.MergeLabel != "" && pr.HasLabel(deps.MergeLabel)
-	if !labeled && (!deps.ApprovalIsIntent || pr.AutoMergeEnabled) {
+	if !labeled && (!deps.Approval.OnApproval || pr.AutoMergeEnabled) {
 		return
 	}
 
@@ -626,14 +620,14 @@ func reconcileEntries(ctx context.Context, deps *Deps, result *PollResult, openP
 		// A failed review lookup counts as approved so a transient error
 		// never ejects a PR.
 		approved := true
-		if isOpen && deps.RequiredApprovals > 0 {
-			if rv, err := forge.GetReviews(ctx, deps.Forge, deps.Owner, deps.Repo, pr.Number); err != nil {
+		if isOpen && deps.Approval.Require {
+			if ok, _, _, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, entry.TargetBranch, pr.Number); err != nil {
 				result.Errors = append(result.Errors, fmt.Errorf("get reviews of PR #%d: %w", pr.Number, err))
 			} else {
-				approved = rv.Approved(deps.RequiredApprovals)
+				approved = ok
 			}
 		}
-		approvalIntent := deps.ApprovalIsIntent && approved
+		approvalIntent := deps.Approval.OnApproval && approved
 		retargeted := pr.BaseBranch != "" && pr.BaseBranch != entry.TargetBranch
 		if retargeted && labeled {
 			if target, err := labeledTargetBranch(ctx, deps, pr); err == nil && target == entry.TargetBranch {
@@ -696,7 +690,7 @@ func reconcileEntries(ctx context.Context, deps *Deps, result *PollResult, openP
 				when:  isOpen && !approved,
 				label: "unapproved",
 				opts: removeOpts{
-					comment: "⏸️ Removed from merge queue: this PR no longer has the required approval (it was dismissed or changes were requested). It re-enters the queue once approved again.",
+					comment: batch.UnapprovedComment,
 					advance: true,
 					logMsg:  "removed PR that lost its approval",
 				},

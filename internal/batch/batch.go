@@ -52,6 +52,9 @@ type Engine struct {
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
 	MergeLabel       string
+	// Approval is re-checked right before landing: an approval dismissed
+	// while the batch tested must not be fast-forwarded past.
+	Approval forge.ApprovalPolicy
 	// SkipIfUpToDate lands a single up-to-date PR by fast-forwarding to its
 	// head instead of building a batch branch.
 	SkipIfUpToDate bool
@@ -286,10 +289,17 @@ func (e *Engine) HandlePass(ctx context.Context, b *pg.Batch) error {
 	if err != nil {
 		return err
 	}
-	// The fast-forward below skips the forge's dependency check.
+	// The fast-forward below skips the forge's dependency and approval
+	// checks.
 	held, err := e.holdBlocked(ctx, b, entries)
 	if err != nil {
 		return err
+	}
+	if !held {
+		held, err = e.holdUnapproved(ctx, b, entries)
+		if err != nil {
+			return err
+		}
 	}
 	if held {
 		if len(b.CurrentIds) == 0 {
@@ -733,5 +743,49 @@ func (e *Engine) holdBlocked(ctx context.Context, b *pg.Batch, entries []pg.Queu
 		return ok
 	})
 	slog.Info("batch members held back by open dependencies", "batch", b.ID, "held", len(blocked), "current", len(b.CurrentIds))
+	return true, nil
+}
+
+// UnapprovedComment explains why a PR left the queue with its intent kept.
+const UnapprovedComment = "⏸️ Removed from merge queue: this PR no longer has the required approval " +
+	"(it was dismissed or changes were requested). It re-enters the queue once approved again."
+
+// holdUnapproved drops members that lost their approval while the batch
+// tested, keeping their merge intent; like holdBlocked the caller rebuilds.
+// A failed review lookup holds nobody back, matching the poller.
+func (e *Engine) holdUnapproved(ctx context.Context, b *pg.Batch, entries []pg.QueueEntry) (bool, error) {
+	if !e.Approval.Require {
+		return false, nil
+	}
+	unapproved := map[int64]bool{}
+	for i := range entries {
+		ok, _, _, err := e.Approval.Check(ctx, e.Forge, e.Owner, e.Repo, b.TargetBranch, entries[i].PrNumber)
+		if err != nil {
+			slog.Warn("pre-land approval check failed, landing anyway", "pr", entries[i].PrNumber, "error", err)
+			continue
+		}
+		if !ok {
+			unapproved[entries[i].ID] = true
+		}
+	}
+	if len(unapproved) == 0 {
+		return false, nil
+	}
+	for i := range entries {
+		ent := &entries[i]
+		if !unapproved[ent.ID] {
+			continue
+		}
+		logutil.WarnIfErr(e.Forge.SetMQStatus(ctx, e.Owner, e.Repo, ent.PrHeadSha, forge.MQStatus{
+			State: pg.CheckStatePending, Description: "Waiting for approval", TargetURL: e.prURL(ent.PrNumber),
+		}), "set mq status failed", "pr", ent.PrNumber)
+		merge.SkipPendingMirroredChecks(ctx, e.Forge, e.Owner, e.Repo, ent.PrHeadSha)
+		logutil.WarnIfErr(e.Forge.Comment(ctx, e.Owner, e.Repo, ent.PrNumber, UnapprovedComment),
+			"post comment failed", "pr", ent.PrNumber)
+		// The next SaveBatch deletes EjectedIds from the queue.
+		b.EjectedIds = append(b.EjectedIds, ent.ID)
+	}
+	b.CurrentIds = slices.DeleteFunc(b.CurrentIds, func(id int64) bool { return unapproved[id] })
+	slog.Info("batch members held back: approval withdrawn", "batch", b.ID, "held", len(unapproved), "current", len(b.CurrentIds))
 	return true, nil
 }

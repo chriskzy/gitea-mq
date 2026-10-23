@@ -199,16 +199,24 @@ in
       type = lib.types.bool;
       default = true;
       description = "Configure branch protection and webhooks on startup. Disable for non-admin tokens.";
+    };
+
+    requireApproval = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Keep PRs out of the queue until they are approved, and re-check before landing.";
+    };
+
     requiredApprovals = lib.mkOption {
       type = lib.types.ints.unsigned;
       default = 0;
-      description = "Keep PRs out of the queue until they have this many approvals. 0 disables the check.";
+      description = "Approvals needed when requireApproval is set. 0 reads it from branch protection when readable, else 1.";
     };
 
-    approvalIsIntent = lib.mkOption {
+    enqueueOnApproval = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Queue approved PRs with green CI without automerge or the merge label.";
+      description = "Treat approval as merge intent: queue approved PRs without automerge or the merge label. Implies requireApproval.";
     };
 
     refreshInterval = lib.mkOption {
@@ -337,8 +345,9 @@ in
         GITEA_MQ_BISECT_MAX_STEPS = toString cfg.bisectMaxSteps;
         GITEA_MQ_REQUIRED_CHECKS_SOURCE = cfg.requiredChecksSource;
         GITEA_MQ_AUTO_SETUP = lib.boolToString cfg.autoSetup;
+        GITEA_MQ_REQUIRE_APPROVAL = lib.boolToString cfg.requireApproval;
         GITEA_MQ_REQUIRED_APPROVALS = toString cfg.requiredApprovals;
-        GITEA_MQ_APPROVAL_IS_INTENT = lib.boolToString cfg.approvalIsIntent;
+        GITEA_MQ_ENQUEUE_ON_APPROVAL = lib.boolToString cfg.enqueueOnApproval;
         GITEA_MQ_REFRESH_INTERVAL = cfg.refreshInterval;
         GITEA_MQ_DISCOVERY_INTERVAL = cfg.discoveryInterval;
         GITEA_MQ_LOG_LEVEL = cfg.logLevel;

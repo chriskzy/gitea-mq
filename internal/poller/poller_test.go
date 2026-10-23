@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/gitea"
 	"github.com/Mic92/gitea-mq/internal/merge"
 	"github.com/Mic92/gitea-mq/internal/poller"
@@ -815,7 +816,7 @@ func mergeOK(mock *gitea.MockClient) {
 // the merge and the PR would hold the head of the queue until timeout.
 func TestPollOnce_RequiredApprovals_GatesEnqueue(t *testing.T) {
 	deps, mock, svc, ctx, repoID := setupPollerTest(t)
-	deps.RequiredApprovals = 1
+	deps.Approval = forge.ApprovalPolicy{Require: true, Count: 1}
 	mockAutomergePRs(mock, makePR(42, "sha42", "main"))
 	mergeOK(mock)
 
@@ -845,7 +846,7 @@ func TestPollOnce_RequiredApprovals_GatesEnqueue(t *testing.T) {
 
 func TestPollOnce_RequiredApprovals_RemovesOnChangesRequested(t *testing.T) {
 	deps, mock, svc, ctx, repoID := setupPollerTest(t)
-	deps.RequiredApprovals = 1
+	deps.Approval = forge.ApprovalPolicy{Require: true, Count: 1}
 	if _, err := svc.Enqueue(ctx, repoID, 42, "sha42", "main", false); err != nil {
 		t.Fatal(err)
 	}
@@ -876,8 +877,7 @@ func TestPollOnce_RequiredApprovals_RemovesOnChangesRequested(t *testing.T) {
 // it itself; unapproved PRs are left alone without any status.
 func TestPollOnce_ApprovalIsIntent(t *testing.T) {
 	deps, mock, svc, ctx, repoID := setupPollerTest(t)
-	deps.RequiredApprovals = 1
-	deps.ApprovalIsIntent = true
+	deps.Approval = forge.ApprovalPolicy{Require: true, Count: 1, OnApproval: true}
 	mergeOK(mock)
 	mock.ListOpenPRsFn = func(context.Context, string, string) ([]gitea.PR, error) {
 		return []gitea.PR{makePR(42, "sha42", "main"), makePR(43, "sha43", "main")}, nil
@@ -918,5 +918,37 @@ func TestPollOnce_ApprovalIsIntent(t *testing.T) {
 	}
 	if e, _ := svc.GetEntry(ctx, repoID, 42); e == nil {
 		t.Fatal("approved PR was removed as cancelled")
+	}
+}
+
+// With no explicit count, the number of approvals comes from branch
+// protection; reading it is skipped when checks come from config.
+func TestPollOnce_RequiredApprovalsFromProtection(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		fromConfig bool
+		enqueue    bool
+	}{
+		{"protection wants 2", false, false},
+		{"config only falls back to 1", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, mock, _, ctx, _ := setupPollerTest(t)
+			deps.Approval = forge.ApprovalPolicy{Require: true, FromConfig: tc.fromConfig}
+			deps.ChecksFromConfig = tc.fromConfig
+			mock.GetBranchProtectionFn = func(context.Context, string, string, string) (*gitea.BranchProtection, error) {
+				return &gitea.BranchProtection{RequiredApprovals: 2}, nil
+			}
+			mockAutomergePRs(mock, makePR(42, "sha42", "main"))
+			mergeOK(mock)
+			mock.ListPRReviewsFn = approvedBy("alice")
+			res, err := poller.PollOnce(ctx, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(res.Enqueued) == 1; got != tc.enqueue {
+				t.Fatalf("enqueued=%v, want %v", got, tc.enqueue)
+			}
+		})
 	}
 }

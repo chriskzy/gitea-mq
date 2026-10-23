@@ -317,19 +317,31 @@ func TestLoad_AutoSetupAndChecksSource(t *testing.T) {
 	}
 }
 
-func TestLoad_ApprovalIsIntentImpliesOneApproval(t *testing.T) {
-	setEnv(t, with(map[string]string{
-		"GITEA_MQ_GITEA_URL":          "https://gitea.example.com",
-		"GITEA_MQ_GITEA_TOKEN":        "tok",
-		"GITEA_MQ_WEBHOOK_SECRET":     "sec",
-		"GITEA_MQ_REPOS":              "org/app",
-		"GITEA_MQ_APPROVAL_IS_INTENT": "true",
-	}))
+func TestLoad_ApprovalOptions(t *testing.T) {
+	base := map[string]string{
+		"GITEA_MQ_GITEA_URL":      "https://gitea.example.com",
+		"GITEA_MQ_GITEA_TOKEN":    "tok",
+		"GITEA_MQ_WEBHOOK_SECRET": "sec",
+		"GITEA_MQ_REPOS":          "org/app",
+	}
+	setEnv(t, with(base))
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.ApprovalIsIntent || cfg.RequiredApprovals != 1 {
-		t.Fatalf("ApprovalIsIntent=%v RequiredApprovals=%d, want true/1", cfg.ApprovalIsIntent, cfg.RequiredApprovals)
+	if cfg.RequireApproval || cfg.EnqueueOnApproval || cfg.RequiredApprovals != 0 {
+		t.Fatalf("defaults: %+v", cfg)
+	}
+
+	env := with(base)
+	env["GITEA_MQ_ENQUEUE_ON_APPROVAL"] = "true"
+	env["GITEA_MQ_REQUIRED_APPROVALS"] = "2"
+	setEnv(t, env)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.RequireApproval || !cfg.EnqueueOnApproval || cfg.RequiredApprovals != 2 {
+		t.Fatalf("enqueue on approval must imply require approval: %+v", cfg)
 	}
 }

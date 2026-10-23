@@ -90,6 +90,7 @@ type BranchProtection struct {
 	RuleName            string   `json:"rule_name"`
 	EnableStatusCheck   bool     `json:"enable_status_check"`
 	StatusCheckContexts []string `json:"status_check_contexts"`
+	RequiredApprovals   int      `json:"required_approvals"`
 }
 
 // Compare is the response from GET /repos/{owner}/{repo}/compare/{base}...{head}.

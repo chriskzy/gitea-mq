@@ -39,6 +39,7 @@ var (
 	_ forge.MergeStacker       = (*giteaForge)(nil)
 	_ forge.DependencyResolver = (*giteaForge)(nil)
 	_ forge.ReviewResolver     = (*giteaForge)(nil)
+	_ forge.ApprovalRequirer   = (*giteaForge)(nil)
 )
 
 // StackMerges builds the batch branch in one clone instead of one per member.
@@ -366,4 +367,12 @@ func (f *giteaForge) GetReviews(ctx context.Context, owner, name string, number 
 		}
 	}
 	return forge.FoldReviews(latest), nil
+}
+
+func (f *giteaForge) RequiredApprovals(ctx context.Context, owner, name, branch string) (int, error) {
+	bp, err := f.client.GetBranchProtection(ctx, owner, name, branch)
+	if err != nil || bp == nil {
+		return 0, err
+	}
+	return bp.RequiredApprovals, nil
 }

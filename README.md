@@ -82,8 +82,9 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_REQUIRED_CHECKS_SOURCE` | no | `protection` | `protection`: read required checks from branch protection, falling back to `GITEA_MQ_REQUIRED_CHECKS`. `config`: use `GITEA_MQ_REQUIRED_CHECKS` only and never read branch protection (see [Running without admin rights](#running-without-admin-rights)) |
 | `GITEA_MQ_AUTO_SETUP` | no | `true` | Configure branch protection and webhooks on startup (see [Auto-setup](#auto-setup)) |
 | `GITEA_MQ_MERGE_LABEL` | no | `merge-queue` | Label that enqueues a PR (stack-aware on GitHub); set to `none` to disable |
-| `GITEA_MQ_REQUIRED_APPROVALS` | no | `0` | Keep PRs out of the queue until they have this many approvals and no outstanding change request (see [Approvals](#approvals)). `0` = off |
-| `GITEA_MQ_APPROVAL_IS_INTENT` | no | `false` | An approved PR with green CI enters the queue without automerge or the merge label. Implies `GITEA_MQ_REQUIRED_APPROVALS=1` if unset |
+| `GITEA_MQ_REQUIRE_APPROVAL` | no | `false` | Keep PRs out of the queue until approved, and re-check right before landing (see [Approvals](#approvals)) |
+| `GITEA_MQ_REQUIRED_APPROVALS` | no | `0` | Approvals needed. `0` = take it from branch protection when readable, else 1 |
+| `GITEA_MQ_ENQUEUE_ON_APPROVAL` | no | `false` | Approval counts as merge intent: an approved PR with green CI is queued without automerge or the merge label. Implies `GITEA_MQ_REQUIRE_APPROVAL` |
 | `GITEA_MQ_PRIORITY_LABEL` | no | - | PRs carrying this label are tested ahead of unlabelled ones, without interrupting running tests |
 | `GITEA_MQ_LABEL_PREFIX` | no | `mq/` | Prefix of the queue state labels set on PRs (see [Queue labels](#queue-labels)); set to `none` to disable |
 | `GITEA_MQ_BATCH_MAX` | no | `1` | Max PRs tested together as one batch. `1` = batching off (legacy behaviour). `0` = everything currently queued |
@@ -136,16 +137,22 @@ approvals, an armed but unapproved PR is still tested on a merge branch; the
 forge then refuses to merge it and it holds the head of the queue until the
 success timeout removes it.
 
-`GITEA_MQ_REQUIRED_APPROVALS=N` closes that gap: a PR with merge intent is
-only queued once it has N approvals and no outstanding change request; until
-then its `gitea-mq` status reads `Waiting for approval`. A queued PR whose
-approval is dismissed, or that gets a change request, leaves the queue with
-its intent kept and re-enters once approved again. Each reviewer's latest
-review counts; dismissed reviews are ignored. On Gitea only official reviews
-(from users allowed to approve) count, and stale ones (made before the latest
-push) are ignored.
+`GITEA_MQ_REQUIRE_APPROVAL=true` closes that gap: a PR with merge intent is
+only queued once it has enough approvals and no outstanding change request;
+until then its `gitea-mq` status reads `Waiting for approval (x/N)`. A queued
+PR whose approval is dismissed, or that gets a change request, leaves the
+queue with its intent kept and re-enters once approved again. Approval is
+checked again right before a batch fast-forwards the target, since that
+bypasses the forge's own merge checks.
 
-`GITEA_MQ_APPROVAL_IS_INTENT=true` additionally makes approval itself the
+How many approvals: `GITEA_MQ_REQUIRED_APPROVALS`, or, when it is `0`, the
+branch protection's *required approvals* (read only if the token may read
+protection and `GITEA_MQ_REQUIRED_CHECKS_SOURCE` is not `config`), with 1 as
+the floor. Each reviewer's latest review counts; dismissed reviews are
+ignored. On Gitea only official reviews (from users allowed to approve) count,
+and stale ones (made before the latest push) are ignored.
+
+`GITEA_MQ_ENQUEUE_ON_APPROVAL=true` additionally makes approval itself the
 merge signal: an approved, non-draft PR with green CI enters the queue without
 anyone arming automerge or adding the label, and gitea-mq merges it when the
 queue passes. This costs one review lookup per open, unqueued PR per poll.

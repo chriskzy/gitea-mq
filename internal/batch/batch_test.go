@@ -591,3 +591,45 @@ func TestPendingDrop(t *testing.T) {
 		t.Fatalf("expected done, got %+v", b)
 	}
 }
+
+// reviewForge adds forge.ReviewResolver to the mock.
+type reviewForge struct {
+	*forge.MockForge
+	approved map[int64]bool
+}
+
+func (r *reviewForge) GetReviews(_ context.Context, _, _ string, n int64) (forge.Reviews, error) {
+	if r.approved[n] {
+		return forge.Reviews{Approvals: 1}, nil
+	}
+	return forge.Reviews{ChangesRequested: true}, nil
+}
+
+// An approval withdrawn while the batch tested must not be landed: the
+// member is held back (intent kept) and the rest rebuilt.
+func TestHandlePass_HoldsUnapproved(t *testing.T) {
+	e, f, svc, ctx := setup(t, 10, 20)
+	e.Approval = forge.ApprovalPolicy{Require: true, Count: 1}
+	e.Forge = &reviewForge{MockForge: f.MockForge, approved: map[int64]bool{10: true}}
+
+	b, err := e.FormAndBuild(ctx, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.HandlePass(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f.target, "sha20") {
+		t.Fatalf("unapproved #20 landed: target=%q", f.target)
+	}
+	if ent, _ := svc.GetEntry(ctx, e.RepoID, 20); ent != nil {
+		t.Fatal("unapproved #20 still queued")
+	}
+	if n := len(f.CallsTo("CancelAutoMerge")); n != 0 {
+		t.Fatalf("intent must be kept, got %d CancelAutoMerge", n)
+	}
+	b = mustLive(t, svc, ctx, e.RepoID)
+	if len(b.CurrentIds) != 1 || b.Builds != 2 {
+		t.Fatalf("expected rebuild with #10 only: current=%v builds=%d", b.CurrentIds, b.Builds)
+	}
+}
