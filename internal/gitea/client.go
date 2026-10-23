@@ -206,6 +206,11 @@ type Client interface {
 	// POST /repos/{owner}/{repo}/pulls/{index}/merge
 	MergePR(ctx context.Context, owner, repo string, index int64) error
 
+	// MarkManuallyMerged records a PR as merged by an existing commit
+	// (Do: manually-merged). Needs the repository's allow_manual_merge.
+	// POST /repos/{owner}/{repo}/pulls/{index}/merge
+	MarkManuallyMerged(ctx context.Context, owner, repo string, index int64, sha string) error
+
 	// RemoveIssueLabel removes a label (by id) from an issue or PR.
 	// DELETE /repos/{owner}/{repo}/issues/{index}/labels/{id}
 	RemoveIssueLabel(ctx context.Context, owner, repo string, index, labelID int64) error
