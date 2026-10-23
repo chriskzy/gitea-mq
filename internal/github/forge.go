@@ -18,8 +18,9 @@ import (
 )
 
 var (
-	_ forge.Forge         = (*githubForge)(nil)
-	_ forge.StackResolver = (*githubForge)(nil)
+	_ forge.Forge          = (*githubForge)(nil)
+	_ forge.StackResolver  = (*githubForge)(nil)
+	_ forge.ReviewResolver = (*githubForge)(nil)
 )
 
 type githubForge struct {
@@ -525,4 +526,28 @@ func (f *githubForge) Comment(ctx context.Context, owner, name string, number in
 	}
 	_, _, err = c.Issues.CreateComment(ctx, owner, name, int(number), &gh.IssueComment{Body: gh.Ptr(body)})
 	return err
+}
+
+// GetReviews folds reviews to each reviewer's latest verdict; a dismissal
+// clears that reviewer's earlier approval or change request.
+func (f *githubForge) GetReviews(ctx context.Context, owner, name string, number int64) (forge.Reviews, error) {
+	c, err := f.app.ClientForRepo(owner, name)
+	if err != nil {
+		return forge.Reviews{}, err
+	}
+	latest := map[string]bool{}
+	opts := &gh.ListOptions{PerPage: 100}
+	for r, err := range c.PullRequests.ListReviewsIter(ctx, owner, name, int(number), opts) {
+		if err != nil {
+			return forge.Reviews{}, err
+		}
+		login := r.GetUser().GetLogin()
+		switch r.GetState() {
+		case "APPROVED", "CHANGES_REQUESTED":
+			latest[login] = r.GetState() == "APPROVED"
+		case "DISMISSED":
+			delete(latest, login)
+		}
+	}
+	return forge.FoldReviews(latest), nil
 }

@@ -68,6 +68,9 @@ func run() error {
 		"batch_max", cfg.BatchMax,
 		"auto_setup", cfg.AutoSetup,
 		"checks_from_config", cfg.ChecksFromConfig,
+		"require_approval", cfg.RequireApproval,
+		"required_approvals", cfg.RequiredApprovals,
+		"enqueue_on_approval", cfg.EnqueueOnApproval,
 	)
 	warnPullRequestOnlyChecks(cfg)
 	if cfg.ChecksFromConfig && len(cfg.RequiredChecks) == 0 {
@@ -142,20 +145,25 @@ func run() error {
 
 	// Create the repo registry — central coordination for managed repos.
 	reg := registry.New(ctx, &registry.Deps{
-		Forges:              forges,
-		Queue:               queueSvc,
-		WebhookSecret:       giteaWebhookSecret,
-		ExternalURL:         cfg.ExternalURL,
-		PollInterval:        cfg.PollInterval,
-		IdlePollInterval:    cfg.IdlePollInterval,
-		CheckTimeout:        cfg.CheckTimeout,
-		FallbackChecks:      cfg.RequiredChecks,
-		ChecksFromConfig:    cfg.ChecksFromConfig,
-		PRChecks:            cfg.PRRequiredChecks,
-		MergeChecks:         cfg.MergeRequiredChecks,
-		SkipSetup:           !cfg.AutoSetup,
-		MergeLabel:          cfg.MergeLabel,
-		PriorityLabel:       cfg.PriorityLabel,
+		Forges:           forges,
+		Queue:            queueSvc,
+		WebhookSecret:    giteaWebhookSecret,
+		ExternalURL:      cfg.ExternalURL,
+		PollInterval:     cfg.PollInterval,
+		IdlePollInterval: cfg.IdlePollInterval,
+		CheckTimeout:     cfg.CheckTimeout,
+		FallbackChecks:   cfg.RequiredChecks,
+		ChecksFromConfig: cfg.ChecksFromConfig,
+		PRChecks:         cfg.PRRequiredChecks,
+		MergeChecks:      cfg.MergeRequiredChecks,
+		SkipSetup:        !cfg.AutoSetup,
+		MergeLabel:       cfg.MergeLabel,
+		PriorityLabel:    cfg.PriorityLabel,
+		Approval: forge.ApprovalPolicy{
+			Require:    cfg.RequireApproval,
+			Count:      cfg.RequiredApprovals,
+			OnApproval: cfg.EnqueueOnApproval,
+		},
 		LabelPrefix:         cfg.LabelPrefix,
 		SuccessTimeout:      5 * time.Minute,
 		SkipQueueIfUpToDate: cfg.SkipQueueIfUpToDate,
@@ -211,6 +219,8 @@ func run() error {
 	}
 	mux.Handle("GET /api/events", web.EventsHandler(queueSvc, repoID))
 	mux.Handle("GET /api/events/summary", web.EventSummaryHandler(queueSvc, repoID))
+	mux.Handle("GET /api/v1/repos/{forge}/{owner}/{name}/events", web.EventsHandler(queueSvc, repoID))
+	mux.Handle("GET /api/v1/repos/{forge}/{owner}/{name}/queue", web.QueueHandler(queueSvc, repoID))
 	if metricsReg != nil {
 		mux.Handle("GET /metrics", metricsReg)
 	}
