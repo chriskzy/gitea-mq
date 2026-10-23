@@ -174,6 +174,11 @@ Read-only JSON endpoints:
   `/api/events?kind=ejected&after=<last id>`.
 - `GET /api/events/summary?since=24h` counts events per repo, kind and
   reason.
+- `GET /api/v1/repos/{forge}/{owner}/{name}/events` is `/api/events` scoped
+  to one repo (same parameters).
+- `GET /api/v1/repos/{forge}/{owner}/{name}/queue` returns the repo's live
+  queue per target branch, in queue order: PR, position, state, head SHA,
+  priority, enqueue and testing-start times, merge branch and batch id.
 
 With `GITEA_MQ_METRICS=true`, `/metrics` exposes the same events as the
 counter `gitea_mq_events_total{repo,kind,reason}`. It is kept in memory and

@@ -81,3 +81,50 @@ func jsonNum(f float64) string {
 	b, _ := json.Marshal(int64(f))
 	return string(b)
 }
+
+func TestRepoScopedAPI(t *testing.T) {
+	svc, ctx, repoID := testutil.TestQueueService(t)
+	lookup := func(key string) (int64, bool) { return repoID, key == "gitea:org/app" }
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/v1/repos/{forge}/{owner}/{name}/events", web.EventsHandler(svc, lookup))
+	mux.Handle("GET /api/v1/repos/{forge}/{owner}/{name}/queue", web.QueueHandler(svc, lookup))
+
+	for _, pr := range []int64{1, 2} {
+		if _, err := svc.Enqueue(ctx, repoID, pr, "sha", "main", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testutil.EnqueueTesting(t, svc, repoID, 3, "sha3", "merge3")
+	svc.RecordEvent(ctx, queue.Event{RepoID: repoID, Kind: queue.EventEnqueued, PRNumber: 1})
+
+	get := func(url string) (int, map[string]any) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body
+	}
+
+	code, body := get("/api/v1/repos/gitea/org/app/events?since=1h")
+	if code != http.StatusOK || len(body["events"].([]any)) != 1 {
+		t.Fatalf("events: code=%d body=%v", code, body)
+	}
+
+	code, body = get("/api/v1/repos/gitea/org/app/queue")
+	if code != http.StatusOK {
+		t.Fatalf("queue: code=%d", code)
+	}
+	main := body["branches"].(map[string]any)["main"].([]any)
+	if len(main) != 3 {
+		t.Fatalf("queue main = %v", main)
+	}
+	// In-flight entries sort first.
+	head := main[0].(map[string]any)
+	if head["pr"] != float64(3) || head["state"] != "testing" || head["position"] != float64(1) || head["merge_branch_sha"] != "merge3" {
+		t.Fatalf("head = %v", head)
+	}
+
+	if code, _ := get("/api/v1/repos/gitea/other/repo/queue"); code != http.StatusNotFound {
+		t.Fatalf("unmanaged repo: code=%d", code)
+	}
+}

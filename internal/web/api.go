@@ -31,9 +31,11 @@ type apiEvent struct {
 	Detail       json.RawMessage `json:"detail,omitempty"`
 }
 
-// EventsHandler serves GET /api/events: queue events in id order.
+// EventsHandler serves GET /api/events and
+// GET /api/v1/repos/{forge}/{owner}/{name}/events: queue events in id order.
 //
-// Query parameters (all optional): repo=<forge>:<owner>/<name>, kind,
+// Query parameters (all optional): repo=<forge>:<owner>/<name> (on the
+// unscoped route), kind,
 // after=<id> (cursor: pass the last id seen), since=<duration or RFC3339>,
 // limit (default 100, max 1000). The response carries next_after so
 // consumers can poll for new events, e.g. kind=ejected.
@@ -43,7 +45,7 @@ func EventsHandler(svc *queue.Service, repos RepoIDLookup) http.HandlerFunc {
 		f := queue.EventFilter{Kind: queue.EventKind(q.Get("kind")), Limit: defaultEventLimit}
 
 		var ok bool
-		if f.RepoID, ok = repoFilter(w, q.Get("repo"), repos); !ok {
+		if f.RepoID, ok = repoFilter(w, repoKey(r), repos); !ok {
 			return
 		}
 		if s := q.Get("after"); s != "" {
@@ -104,7 +106,7 @@ func EventsHandler(svc *queue.Service, repos RepoIDLookup) http.HandlerFunc {
 func EventSummaryHandler(svc *queue.Service, repos RepoIDLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		repoID, ok := repoFilter(w, q.Get("repo"), repos)
+		repoID, ok := repoFilter(w, repoKey(r), repos)
 		if !ok {
 			return
 		}
@@ -132,6 +134,67 @@ func EventSummaryHandler(svc *queue.Service, repos RepoIDLookup) http.HandlerFun
 			out.Counts = append(out.Counts, count{
 				Repo: row.Forge + ":" + row.Owner + "/" + row.Name, Kind: row.Kind, Reason: row.Reason, Count: row.Count,
 			})
+		}
+		writeAPIJSON(w, out)
+	}
+}
+
+// repoKey is the repo the request is scoped to: the path segments of the
+// /api/v1/repos/{forge}/{owner}/{name}/... routes, else ?repo=.
+func repoKey(r *http.Request) string {
+	if f := r.PathValue("forge"); f != "" {
+		return f + ":" + r.PathValue("owner") + "/" + r.PathValue("name")
+	}
+	return r.URL.Query().Get("repo")
+}
+
+// apiQueueEntry is the public shape of a queued PR.
+type apiQueueEntry struct {
+	PR               int64      `json:"pr"`
+	Position         int        `json:"position"`
+	State            string     `json:"state"`
+	HeadSHA          string     `json:"head_sha"`
+	Priority         bool       `json:"priority"`
+	EnqueuedAt       time.Time  `json:"enqueued_at"`
+	TestingStartedAt *time.Time `json:"testing_started_at,omitempty"`
+	MergeBranch      string     `json:"merge_branch,omitempty"`
+	MergeBranchSHA   string     `json:"merge_branch_sha,omitempty"`
+	Batch            *int64     `json:"batch,omitempty"`
+}
+
+// QueueHandler serves GET /api/v1/repos/{forge}/{owner}/{name}/queue: the
+// repo's live queue per target branch, in queue order.
+func QueueHandler(svc *queue.Service, repos RepoIDLookup) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := repoKey(r)
+		repoID, ok := repos(key)
+		if !ok {
+			http.Error(w, "repo: not managed", http.StatusNotFound)
+			return
+		}
+		entries, err := svc.ListActiveEntries(r.Context(), repoID)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		out := struct {
+			Repo     string                     `json:"repo"`
+			Branches map[string][]apiQueueEntry `json:"branches"`
+		}{Repo: key, Branches: map[string][]apiQueueEntry{}}
+		for _, e := range entries {
+			list := out.Branches[e.TargetBranch]
+			ae := apiQueueEntry{
+				PR: e.PrNumber, Position: len(list) + 1, State: string(e.State), HeadSHA: e.PrHeadSha,
+				Priority: e.Priority, EnqueuedAt: e.EnqueuedAt.Time,
+				MergeBranch: e.MergeBranchName.String, MergeBranchSHA: e.MergeBranchSha.String,
+			}
+			if e.TestingStartedAt.Valid {
+				ae.TestingStartedAt = &e.TestingStartedAt.Time
+			}
+			if e.ActiveBatchID.Valid {
+				ae.Batch = &e.ActiveBatchID.Int64
+			}
+			out.Branches[e.TargetBranch] = append(list, ae)
 		}
 		writeAPIJSON(w, out)
 	}
