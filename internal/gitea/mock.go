@@ -30,6 +30,7 @@ type MockClient struct {
 	CreateCommentFn           func(ctx context.Context, owner, repo string, index int64, body string) error
 	CancelAutoMergeFn         func(ctx context.Context, owner, repo string, index int64) error
 	MergePRFn                 func(ctx context.Context, owner, repo string, index int64) error
+	MarkManuallyMergedFn      func(ctx context.Context, owner, repo string, index int64, sha string) error
 	RemoveIssueLabelFn        func(ctx context.Context, owner, repo string, index, labelID int64) error
 	ListRepoLabelsFn          func(ctx context.Context, owner, repo string) ([]Label, error)
 	CreateRepoLabelFn         func(ctx context.Context, owner, repo, name, color string, exclusive bool) (*Label, error)
@@ -382,4 +383,14 @@ func (m *MockClient) ListIssueDependencies(ctx context.Context, owner, repo stri
 	}
 
 	return nil, nil
+}
+
+func (m *MockClient) MarkManuallyMerged(ctx context.Context, owner, repo string, index int64, sha string) error {
+	m.record("MarkManuallyMerged", owner, repo, index, sha)
+
+	if m.MarkManuallyMergedFn != nil {
+		return m.MarkManuallyMergedFn(ctx, owner, repo, index, sha)
+	}
+
+	return nil
 }

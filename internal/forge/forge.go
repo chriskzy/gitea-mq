@@ -296,6 +296,14 @@ type Forge interface {
 	ClosePR(ctx context.Context, owner, name string, number int64) error
 }
 
+// ManualMerger is optionally implemented by forges that can record a PR as
+// merged by a commit that already landed (Gitea's "manually merged"). The
+// batch engine uses it after fast-forwarding, so members show as merged
+// with the landed SHA instead of being closed.
+type ManualMerger interface {
+	MarkMerged(ctx context.Context, owner, name string, number int64, sha string) error
+}
+
 // UnknownForgeError is returned by Set.For when no adapter is registered for
 // a ref's forge kind.
 type UnknownForgeError struct {

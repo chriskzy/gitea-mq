@@ -573,3 +573,47 @@ func TestPendingDrop(t *testing.T) {
 		t.Fatalf("expected done, got %+v", b)
 	}
 }
+
+// manualMergeForge adds forge.ManualMerger to the mock.
+type manualMergeForge struct {
+	*forge.MockForge
+	err    error
+	marked map[int64]string
+}
+
+func (m *manualMergeForge) MarkMerged(_ context.Context, _, _ string, n int64, sha string) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.marked[n] = sha
+	return nil
+}
+
+// Batch members are recorded as merged by the landed SHA instead of closed.
+func TestEnsureMergedOrClose_MarksMerged(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		wantClose int
+	}{
+		{"marked", nil, 0},
+		{"manual merge refused", errors.New("manual merge not allowed"), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, f, _, ctx := setup(t, 10)
+			mm := &manualMergeForge{MockForge: f.MockForge, err: tc.err, marked: map[int64]string{}}
+			e.Forge = mm
+
+			b, _ := e.FormAndBuild(ctx, "main")
+			if err := e.HandlePass(ctx, b); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(f.CallsTo("ClosePR")); got != tc.wantClose {
+				t.Fatalf("ClosePR calls = %d, want %d", got, tc.wantClose)
+			}
+			if tc.err == nil && mm.marked[10] != f.target {
+				t.Fatalf("marked SHA = %q, want landed tip %q", mm.marked[10], f.target)
+			}
+		})
+	}
+}

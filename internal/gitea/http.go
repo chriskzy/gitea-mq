@@ -601,6 +601,14 @@ func (c *HTTPClient) MergePR(ctx context.Context, owner, repo string, index int6
 		fmt.Sprintf("merge PR #%d in %s/%s", index, owner, repo))
 }
 
+// MarkManuallyMerged records the PR as merged by sha without merging again.
+func (c *HTTPClient) MarkManuallyMerged(ctx context.Context, owner, repo string, index int64, sha string) error {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, index)
+	return c.doDiscard(ctx, http.MethodPost, path,
+		map[string]string{"Do": "manually-merged", "MergeCommitID": sha},
+		fmt.Sprintf("mark PR #%d in %s/%s merged as %s", index, owner, repo, shortSHA(sha)))
+}
+
 // DELETE /repos/{owner}/{repo}/issues/{index}/labels/{id}; 404 is success.
 func (c *HTTPClient) RemoveIssueLabel(ctx context.Context, owner, repo string, index, labelID int64) error {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels/%d", owner, repo, index, labelID)
