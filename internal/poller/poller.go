@@ -32,6 +32,13 @@ type Deps struct {
 	ExternalURL string
 	// FallbackChecks gates enqueue when branch protection lists none.
 	FallbackChecks []string
+	// PRChecks, when non-nil, replaces the required checks on the PR head
+	// (GITEA_MQ_PR_REQUIRED_CHECKS). An empty list means the PR head is not
+	// gated on CI at all.
+	PRChecks *[]string
+	// MergeChecks, when non-nil, replaces the required checks on merge
+	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
+	MergeChecks *[]string
 	// MergeLabel enqueues labeled PRs (stack-aware on GitHub); empty disables.
 	MergeLabel string
 	// PriorityLabel sorts queued PRs carrying it ahead of others; empty disables.
@@ -134,7 +141,12 @@ func (deps *Deps) isPriority(pr *forge.PR) bool {
 // prCheckResult evaluates the PR's own head-commit checks against the
 // required checks. Reports CheckSuccess when no CI is configured at all.
 func prCheckResult(ctx context.Context, deps *Deps, pr *forge.PR, targetBranch string) (monitor.CheckResult, error) {
-	requiredChecks, err := monitor.ResolveRequiredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, targetBranch, deps.FallbackChecks)
+	// An explicitly empty PR list means the PR head is not gated: the merge
+	// branch run (and, if configured, approval) is the only gate.
+	if deps.PRChecks != nil && len(*deps.PRChecks) == 0 {
+		return monitor.CheckSuccess, nil
+	}
+	requiredChecks, err := monitor.ResolveCheckList(ctx, deps.Forge, deps.Owner, deps.Repo, targetBranch, deps.PRChecks, deps.FallbackChecks)
 	if err != nil {
 		return monitor.CheckWaiting, fmt.Errorf("resolve required checks for PR #%d: %w", pr.Number, err)
 	}
@@ -198,6 +210,7 @@ func monitorDeps(deps *Deps) *monitor.Deps {
 		CheckTimeout:   deps.CheckTimeout,
 		FallbackChecks: deps.FallbackChecks,
 		MergeLabel:     deps.MergeLabel,
+		MergeChecks:    deps.MergeChecks,
 	}
 	if deps.Batch.Enabled() {
 		m.Batch = deps.Batch

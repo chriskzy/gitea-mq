@@ -172,11 +172,14 @@ type RepoLister interface {
 
 // Deps holds the dependencies the web handlers need.
 type Deps struct {
-	Queue           *queue.Service
-	Repos           RepoLister
-	Forges          *forge.Set
-	FallbackChecks  []string // from GITEA_MQ_REQUIRED_CHECKS
-	RefreshInterval int      // seconds
+	Queue          *queue.Service
+	Repos          RepoLister
+	Forges         *forge.Set
+	FallbackChecks []string // from GITEA_MQ_REQUIRED_CHECKS
+	// MergeChecks, when non-nil, replaces the required checks on merge
+	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
+	MergeChecks     *[]string
+	RefreshInterval int // seconds
 	BasePath        string
 }
 
@@ -461,7 +464,7 @@ func servePRDetail(w http.ResponseWriter, r *http.Request, deps *Deps, ref forge
 
 		var required []string
 		if f != nil {
-			required, err = monitor.ResolveRequiredChecks(ctx, f, owner, name, entry.TargetBranch, deps.FallbackChecks)
+			required, err = monitor.ResolveCheckList(ctx, f, owner, name, entry.TargetBranch, deps.MergeChecks, deps.FallbackChecks)
 			if err != nil {
 				slog.Warn("failed to resolve required checks", "pr", prNumber, "error", err)
 			}

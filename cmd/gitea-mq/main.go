@@ -65,6 +65,8 @@ func run() error {
 		"batch_max", cfg.BatchMax,
 	)
 
+	warnPullRequestOnlyChecks(cfg)
+
 	// Graceful shutdown context.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -125,6 +127,8 @@ func run() error {
 		IdlePollInterval:    cfg.IdlePollInterval,
 		CheckTimeout:        cfg.CheckTimeout,
 		FallbackChecks:      cfg.RequiredChecks,
+		PRChecks:            cfg.PRRequiredChecks,
+		MergeChecks:         cfg.MergeRequiredChecks,
 		MergeLabel:          cfg.MergeLabel,
 		PriorityLabel:       cfg.PriorityLabel,
 		LabelPrefix:         cfg.LabelPrefix,
@@ -185,6 +189,7 @@ func run() error {
 		Repos:           reg,
 		Forges:          forges,
 		FallbackChecks:  cfg.RequiredChecks,
+		MergeChecks:     cfg.MergeRequiredChecks,
 		RefreshInterval: int(cfg.RefreshInterval.Seconds()),
 		BasePath:        cfg.BasePath,
 	}
@@ -232,4 +237,18 @@ func run() error {
 	slog.Info("shutdown complete")
 
 	return nil
+}
+
+// warnPullRequestOnlyChecks flags configured checks that the merge branch
+// would wait for but can never receive. Protection is checked per repo by the
+// registry.
+func warnPullRequestOnlyChecks(cfg *config.Config) {
+	env, list := "GITEA_MQ_REQUIRED_CHECKS", cfg.RequiredChecks
+	if cfg.MergeRequiredChecks != nil {
+		env, list = "GITEA_MQ_MERGE_REQUIRED_CHECKS", *cfg.MergeRequiredChecks
+	}
+	if bad := forge.PullRequestOnlyContexts(list); len(bad) > 0 {
+		slog.Warn(env+" lists checks that only report on pull request events and never on a merge branch; "+
+			"merge-branch runs will wait for them until the check timeout", "checks", bad)
+	}
 }

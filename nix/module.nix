@@ -166,6 +166,26 @@ in
       description = "Fallback required check contexts (if branch protection doesn't specify them).";
     };
 
+    prRequiredChecks = lib.mkOption {
+      type = lib.types.nullOr (lib.types.listOf lib.types.str);
+      default = null;
+      description = ''
+        Checks the PR head must pass before it is queued, replacing branch
+        protection and requiredChecks. An empty list means the PR head is not
+        gated on CI. null keeps the default resolution.
+      '';
+    };
+
+    mergeRequiredChecks = lib.mkOption {
+      type = lib.types.nullOr (lib.types.listOf lib.types.str);
+      default = null;
+      description = ''
+        Checks required on gitea-mq/* merge and batch branches, replacing
+        branch protection and requiredChecks. Use when some PR checks only run
+        on pull request events and can never report on a pushed branch.
+      '';
+    };
+
     batchMax = lib.mkOption {
       type = lib.types.int;
       default = 1;
@@ -308,6 +328,12 @@ in
       }
       // lib.optionalAttrs (cfg.requiredChecks != [ ]) {
         GITEA_MQ_REQUIRED_CHECKS = lib.concatStringsSep "," cfg.requiredChecks;
+      }
+      // lib.optionalAttrs (cfg.prRequiredChecks != null) {
+        GITEA_MQ_PR_REQUIRED_CHECKS = lib.concatStringsSep "," cfg.prRequiredChecks;
+      }
+      // lib.optionalAttrs (cfg.mergeRequiredChecks != null) {
+        GITEA_MQ_MERGE_REQUIRED_CHECKS = lib.concatStringsSep "," cfg.mergeRequiredChecks;
       }
       // lib.optionalAttrs giteaEnabled {
         GITEA_MQ_GITEA_URL = cfg.giteaUrl;

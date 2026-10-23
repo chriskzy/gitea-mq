@@ -669,3 +669,42 @@ func TestRun_TriggerPollsIdleRepo(t *testing.T) {
 		t.Fatalf("triggered idle repo polled forge %d times, want 2", listed)
 	}
 }
+
+// PRChecks gates the PR head on its own list; an explicitly empty list does
+// not gate it at all.
+func TestPollOnce_PRChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		checks  []string
+		state   string
+		enqueue bool
+	}{
+		{"own list pending", []string{"ci / build (pull_request)"}, "pending", false},
+		{"own list green", []string{"ci / build (pull_request)"}, "success", true},
+		{"empty list ignores red CI", []string{}, "failure", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, mock, _, ctx, _ := setupPollerTest(t)
+			checks := tc.checks
+			deps.PRChecks = &checks
+			// Protection would require something else entirely.
+			mock.GetBranchProtectionFn = func(context.Context, string, string, string) (*gitea.BranchProtection, error) {
+				return &gitea.BranchProtection{EnableStatusCheck: true, StatusCheckContexts: []string{"never-reports"}}, nil
+			}
+			mock.GetCombinedCommitStatusFn = func(context.Context, string, string, string) (*gitea.CombinedStatus, error) {
+				return &gitea.CombinedStatus{Statuses: []gitea.CommitStatusResult{{Context: "ci / build (pull_request)", Status: tc.state}}}, nil
+			}
+			mockAutomergePRs(mock, makePR(42, "sha42", "main"))
+			mock.MergeBranchesFn = func(context.Context, string, string, string, string, string) (*gitea.MergeResult, error) {
+				return &gitea.MergeResult{SHA: "merge-sha"}, nil
+			}
+			res, err := poller.PollOnce(ctx, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(res.Enqueued) == 1; got != tc.enqueue {
+				t.Fatalf("enqueued=%v, want %v (%+v)", got, tc.enqueue, res)
+			}
+		})
+	}
+}

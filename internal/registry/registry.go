@@ -44,6 +44,9 @@ type Deps struct {
 	SkipQueueIfUpToDate bool
 	BatchMax            int
 	BisectMaxSteps      int
+	// PRChecks and MergeChecks: see poller.Deps.
+	PRChecks    *[]string
+	MergeChecks *[]string
 }
 
 // RepoRegistry manages the set of active repos. Thread-safe for concurrent
@@ -92,6 +95,8 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		slog.Warn("auto-setup failed", "repo", key, "error", err)
 	}
 
+	r.warnUnreportableChecks(ctx, f, key, ref)
+
 	repo, err := r.deps.Queue.GetOrCreateRepo(ctx, string(ref.Forge), ref.Owner, ref.Name)
 	if err != nil {
 		return err
@@ -121,6 +126,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 			BisectMaxSteps: r.deps.BisectMaxSteps,
 			CheckTimeout:   r.deps.CheckTimeout,
 			FallbackChecks: r.deps.FallbackChecks,
+			MergeChecks:    r.deps.MergeChecks,
 			MergeLabel:     r.deps.MergeLabel,
 			SkipIfUpToDate: r.deps.SkipQueueIfUpToDate,
 			Advance:        triggerPoll,
@@ -149,6 +155,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		ExternalURL:    r.deps.ExternalURL,
 		CheckTimeout:   r.deps.CheckTimeout,
 		FallbackChecks: r.deps.FallbackChecks,
+		MergeChecks:    r.deps.MergeChecks,
 		MergeLabel:     r.deps.MergeLabel,
 	}
 	if batchEngine != nil {
@@ -174,6 +181,8 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		Trigger:             trigger,
 		ExternalURL:         r.deps.ExternalURL,
 		FallbackChecks:      r.deps.FallbackChecks,
+		PRChecks:            r.deps.PRChecks,
+		MergeChecks:         r.deps.MergeChecks,
 		MergeLabel:          r.deps.MergeLabel,
 		PriorityLabel:       r.deps.PriorityLabel,
 		LabelPrefix:         r.deps.LabelPrefix,
@@ -297,4 +306,31 @@ func (r *RepoRegistry) Keys() map[string]struct{} {
 		keys[k] = struct{}{}
 	}
 	return keys
+}
+
+// warnUnreportableChecks flags protection checks the merge branch would wait
+// for but can never receive, which otherwise only shows up as every PR timing
+// out. With MergeChecks set, protection gates only the PR head, so there is
+// nothing to warn about here (main checks the configured lists).
+func (r *RepoRegistry) warnUnreportableChecks(ctx context.Context, f forge.Forge, key string, ref forge.RepoRef) {
+	if r.deps.MergeChecks != nil {
+		return
+	}
+	pl, ok := f.(forge.ProtectionLister)
+	if !ok {
+		return
+	}
+	rules, err := pl.ListProtectedChecks(ctx, ref.Owner, ref.Name)
+	if err != nil {
+		slog.Debug("could not list branch protection for check diagnostics", "repo", key, "error", err)
+		return
+	}
+	for rule, checks := range rules {
+		if bad := forge.PullRequestOnlyContexts(checks); len(bad) > 0 {
+			slog.Warn("required checks can only report on pull request events and never on a merge branch; "+
+				"merge-branch runs will wait for them until the check timeout. "+
+				"Set GITEA_MQ_MERGE_REQUIRED_CHECKS to the checks that run on gitea-mq/* branches",
+				"repo", key, "rule", rule, "checks", bad)
+		}
+	}
 }

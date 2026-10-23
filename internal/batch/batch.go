@@ -50,6 +50,9 @@ type Engine struct {
 	CheckTimeout   time.Duration
 	FallbackChecks []string
 	MergeLabel     string
+	// MergeChecks, when non-nil, replaces the required checks on batch
+	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
+	MergeChecks *[]string
 	// SkipIfUpToDate lands a single up-to-date PR by fast-forwarding to its
 	// head instead of building a batch branch.
 	SkipIfUpToDate bool

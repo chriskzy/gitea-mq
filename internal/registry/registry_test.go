@@ -1,8 +1,11 @@
 package registry_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -242,5 +245,40 @@ func TestConcurrentAccess(t *testing.T) {
 
 	if len(reg.List()) != 10 {
 		t.Errorf("expected 10 repos, got %d", len(reg.List()))
+	}
+}
+
+// A protection rule requiring a pull_request-only context stalls every
+// merge-branch run until timeout; the registry must say so on startup.
+func TestAdd_WarnsAboutPullRequestOnlyChecks(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	mock := &gitea.MockClient{}
+	mock.ListBranchProtectionsFn = func(context.Context, string, string) ([]gitea.BranchProtection, error) {
+		return []gitea.BranchProtection{{
+			RuleName: "main", EnableStatusCheck: true,
+			StatusCheckContexts: []string{"gitea-mq", "ci / build (pull_request)", "ci / lint (push)"},
+		}}, nil
+	}
+	forges := forge.NewSet()
+	forges.Register(gitea.NewForge(mock, "https://gitea.example.com"))
+	reg := registry.New(ctx, &registry.Deps{
+		Forges: forges, Queue: queue.NewService(testutil.TestDB(t)),
+		PollInterval: time.Hour, CheckTimeout: time.Hour,
+	})
+	if err := reg.Add(ctx, giteaRef("org", "app")); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "GITEA_MQ_MERGE_REQUIRED_CHECKS") || !strings.Contains(out, "ci / build (pull_request)") {
+		t.Fatalf("expected warning naming the check, got:\n%s", out)
+	}
+	if strings.Contains(out, "ci / lint (push)") {
+		t.Fatalf("push context wrongly flagged:\n%s", out)
 	}
 }

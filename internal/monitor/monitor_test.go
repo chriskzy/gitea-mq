@@ -263,3 +263,23 @@ func TestEvaluateChecks_GlobRequiredChecks(t *testing.T) {
 		t.Fatalf("expected CheckWaiting for unmatched glob, got %v", r)
 	}
 }
+
+// Protection requires a pull_request-only Actions context that never reports
+// on the pushed merge branch; MergeChecks lets the merge branch pass on the
+// checks that do run there.
+func TestProcessCheckStatus_MergeChecksOverrideProtection(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupMonitorTest(t)
+	withBranchProtection(mock, "gitea-mq", "ci / build (pull_request)")
+	deps.MergeChecks = &[]string{"ci / build (push)"}
+	entry := testutil.EnqueueTesting(t, svc, repoID, 42, "sha42", "mergesha")
+
+	if err := monitor.ProcessCheckStatus(ctx, deps, entry, "ci / build (push)", pg.CheckStateSuccess, ""); err != nil {
+		t.Fatal(err)
+	}
+	if entry, _ = svc.GetEntry(ctx, repoID, 42); entry == nil || entry.State != pg.EntryStateSuccess {
+		t.Fatalf("merge branch did not pass on MergeChecks: %+v", entry)
+	}
+	if n := len(mock.CallsTo("GetBranchProtection")); n != 0 {
+		t.Fatalf("branch protection consulted for merge branch: %d calls", n)
+	}
+}

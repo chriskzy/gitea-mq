@@ -26,6 +26,9 @@ type Deps struct {
 	CheckTimeout   time.Duration
 	FallbackChecks []string // from GITEA_MQ_REQUIRED_CHECKS
 	MergeLabel     string
+	// MergeChecks, when non-nil, replaces the required checks on merge
+	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
+	MergeChecks *[]string
 
 	// Batch, when non-nil, intercepts check results for entries that belong
 	// to a live batch. The single-PR success/failure handlers are skipped.
@@ -64,6 +67,21 @@ func ResolveRequiredChecks(ctx context.Context, f forge.Forge, owner, repo, targ
 		return checks, nil
 	}
 	return fallback, nil
+}
+
+// ResolveCheckList is ResolveRequiredChecks with an explicit per-commit list
+// (GITEA_MQ_PR_REQUIRED_CHECKS / GITEA_MQ_MERGE_REQUIRED_CHECKS). A non-nil
+// list wins, even when empty; nil falls back to protection and config.
+//
+// The PR head and the merge branch need separate lists because not every
+// check can report on both: Gitea/Forgejo Actions name statuses after the
+// triggering event, so `ci (pull_request)` never reports on a pushed
+// gitea-mq/* branch, and waiting for it stalls the queue until the timeout.
+func ResolveCheckList(ctx context.Context, f forge.Forge, owner, repo, targetBranch string, explicit *[]string, fallback []string) ([]string, error) {
+	if explicit != nil {
+		return *explicit, nil
+	}
+	return ResolveRequiredChecks(ctx, f, owner, repo, targetBranch, fallback)
 }
 
 // EvaluateChecks compares recorded check statuses against required checks.
@@ -238,7 +256,7 @@ func ProcessCheckStatus(ctx context.Context, deps *Deps, entry *pg.QueueEntry, c
 		return fmt.Errorf("save check status for PR #%d: %w", entry.PrNumber, err)
 	}
 
-	requiredChecks, err := ResolveRequiredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.TargetBranch, deps.FallbackChecks)
+	requiredChecks, err := ResolveCheckList(ctx, deps.Forge, deps.Owner, deps.Repo, entry.TargetBranch, deps.MergeChecks, deps.FallbackChecks)
 	if err != nil {
 		return fmt.Errorf("resolve required checks: %w", err)
 	}
