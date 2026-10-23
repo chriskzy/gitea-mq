@@ -51,7 +51,10 @@ type Engine struct {
 	FallbackChecks []string
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
-	MergeLabel       string
+	// MergeChecks, when non-nil, replaces the required checks on batch
+	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
+	MergeChecks *[]string
+	MergeLabel  string
 	// SkipIfUpToDate lands a single up-to-date PR by fast-forwarding to its
 	// head instead of building a batch branch.
 	SkipIfUpToDate bool

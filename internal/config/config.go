@@ -46,6 +46,11 @@ type Config struct {
 	ChecksFromConfig bool
 	// AutoSetup lets gitea-mq edit branch protection and webhooks on startup.
 	AutoSetup bool
+	// PRRequiredChecks and MergeRequiredChecks replace the required checks
+	// on the PR head and on merge/batch branches. nil = unset (protection,
+	// then RequiredChecks); a non-nil empty list = no checks.
+	PRRequiredChecks    *[]string
+	MergeRequiredChecks *[]string
 }
 
 type GiteaConfig struct {
@@ -155,13 +160,9 @@ func Load() (*Config, error) {
 		}
 	}
 
-	if checks := os.Getenv("GITEA_MQ_REQUIRED_CHECKS"); checks != "" {
-		for _, c := range strings.Split(checks, ",") {
-			if c = strings.TrimSpace(c); c != "" {
-				cfg.RequiredChecks = append(cfg.RequiredChecks, c)
-			}
-		}
-	}
+	cfg.RequiredChecks = parseList(os.Getenv("GITEA_MQ_REQUIRED_CHECKS"))
+	cfg.PRRequiredChecks = optionalList("GITEA_MQ_PR_REQUIRED_CHECKS")
+	cfg.MergeRequiredChecks = optionalList("GITEA_MQ_MERGE_REQUIRED_CHECKS")
 
 	switch src := envOrDefault("GITEA_MQ_REQUIRED_CHECKS_SOURCE", "protection"); src {
 	case "protection":
@@ -367,6 +368,31 @@ func parseRepos(s string, kind forge.Kind) ([]forge.RepoRef, error) {
 		return nil, fmt.Errorf("no repos specified")
 	}
 	return repos, nil
+}
+
+// parseList splits a comma-separated list, dropping blanks.
+func parseList(s string) []string {
+	var out []string
+	for _, c := range strings.Split(s, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// optionalList returns nil when key is unset and the parsed list (possibly
+// empty) when it is set, so "set to nothing" can mean "no checks".
+func optionalList(key string) *[]string {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return nil
+	}
+	l := parseList(v)
+	if l == nil {
+		l = []string{}
+	}
+	return &l
 }
 
 func parseInt(envKey string, defaultVal, minVal int) (int, error) {

@@ -68,6 +68,7 @@ func run() error {
 		"auto_setup", cfg.AutoSetup,
 		"checks_from_config", cfg.ChecksFromConfig,
 	)
+	warnPullRequestOnlyChecks(cfg)
 	if cfg.ChecksFromConfig && len(cfg.RequiredChecks) == 0 {
 		slog.Warn("GITEA_MQ_REQUIRED_CHECKS_SOURCE=config but GITEA_MQ_REQUIRED_CHECKS is empty: any single passing status will let a merge branch pass")
 	}
@@ -143,6 +144,8 @@ func run() error {
 		CheckTimeout:        cfg.CheckTimeout,
 		FallbackChecks:      cfg.RequiredChecks,
 		ChecksFromConfig:    cfg.ChecksFromConfig,
+		PRChecks:            cfg.PRRequiredChecks,
+		MergeChecks:         cfg.MergeRequiredChecks,
 		SkipSetup:           !cfg.AutoSetup,
 		MergeLabel:          cfg.MergeLabel,
 		PriorityLabel:       cfg.PriorityLabel,
@@ -226,6 +229,7 @@ func run() error {
 		Forges:           forges,
 		FallbackChecks:   cfg.RequiredChecks,
 		ChecksFromConfig: cfg.ChecksFromConfig,
+		MergeChecks:      cfg.MergeRequiredChecks,
 		RefreshInterval:  int(cfg.RefreshInterval.Seconds()),
 		BasePath:         cfg.BasePath,
 	}
@@ -290,5 +294,19 @@ func pruneEvents(ctx context.Context, svc *queue.Service, retention time.Duratio
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// warnPullRequestOnlyChecks flags configured checks that the merge branch
+// would wait for but can never receive. Protection is checked per repo by the
+// registry.
+func warnPullRequestOnlyChecks(cfg *config.Config) {
+	env, list := "GITEA_MQ_REQUIRED_CHECKS", cfg.RequiredChecks
+	if cfg.MergeRequiredChecks != nil {
+		env, list = "GITEA_MQ_MERGE_REQUIRED_CHECKS", *cfg.MergeRequiredChecks
+	}
+	if bad := forge.PullRequestOnlyContexts(list); len(bad) > 0 {
+		slog.Warn(env+" lists checks that only report on pull request events and never on a merge branch; "+
+			"merge-branch runs will wait for them until the check timeout", "checks", bad)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -314,5 +315,38 @@ func TestLoad_AutoSetupAndChecksSource(t *testing.T) {
 	setEnv(t, env)
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GITEA_MQ_REQUIRED_CHECKS_SOURCE") {
 		t.Fatalf("expected invalid source error, got %v", err)
+	}
+}
+
+func TestLoad_CheckLists(t *testing.T) {
+	base := map[string]string{
+		"GITEA_MQ_GITEA_URL":      "https://gitea.example.com",
+		"GITEA_MQ_GITEA_TOKEN":    "tok",
+		"GITEA_MQ_WEBHOOK_SECRET": "sec",
+		"GITEA_MQ_REPOS":          "org/app",
+	}
+	setEnv(t, with(base))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PRRequiredChecks != nil || cfg.MergeRequiredChecks != nil {
+		t.Fatalf("unset lists should be nil: %v %v", cfg.PRRequiredChecks, cfg.MergeRequiredChecks)
+	}
+
+	env := with(base)
+	env["GITEA_MQ_PR_REQUIRED_CHECKS"] = ""
+	env["GITEA_MQ_MERGE_REQUIRED_CHECKS"] = "ci / build (push), ,ci / test (push)"
+	setEnv(t, env)
+	// setEnv clears GITEA_MQ_* by setting them to "", so PR is "set and empty".
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PRRequiredChecks == nil || len(*cfg.PRRequiredChecks) != 0 {
+		t.Fatalf("empty PR list should be set and empty: %v", cfg.PRRequiredChecks)
+	}
+	if want := []string{"ci / build (push)", "ci / test (push)"}; cfg.MergeRequiredChecks == nil || !slices.Equal(*cfg.MergeRequiredChecks, want) {
+		t.Fatalf("MergeRequiredChecks = %v, want %q", cfg.MergeRequiredChecks, want)
 	}
 }

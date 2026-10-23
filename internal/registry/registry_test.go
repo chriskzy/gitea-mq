@@ -1,8 +1,11 @@
 package registry_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -266,7 +269,9 @@ func TestAdd_SkipSetup(t *testing.T) {
 			if err := reg.Add(ctx, giteaRef("org", "app")); err != nil {
 				t.Fatalf("Add: %v", err)
 			}
-			n := len(mock.CallsTo("ListBranchProtections")) + len(mock.CallsTo("ListWebhooks"))
+			// Protection may still be read for startup diagnostics; setup
+			// itself (hook listing/creation, protection edits) must not run.
+			n := len(mock.CallsTo("ListWebhooks")) + len(mock.CallsTo("CreateWebhook")) + len(mock.CallsTo("EditBranchProtection"))
 			if skip && n != 0 {
 				t.Fatalf("SkipSetup: got %d setup calls, want 0", n)
 			}
@@ -274,5 +279,40 @@ func TestAdd_SkipSetup(t *testing.T) {
 				t.Fatal("setup enabled but no setup calls made")
 			}
 		})
+	}
+}
+
+// A protection rule requiring a pull_request-only context stalls every
+// merge-branch run until timeout; the registry must say so on startup.
+func TestAdd_WarnsAboutPullRequestOnlyChecks(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	mock := &gitea.MockClient{}
+	mock.ListBranchProtectionsFn = func(context.Context, string, string) ([]gitea.BranchProtection, error) {
+		return []gitea.BranchProtection{{
+			RuleName: "main", EnableStatusCheck: true,
+			StatusCheckContexts: []string{"gitea-mq", "ci / build (pull_request)", "ci / lint (push)"},
+		}}, nil
+	}
+	forges := forge.NewSet()
+	forges.Register(gitea.NewForge(mock, "https://gitea.example.com"))
+	reg := registry.New(ctx, &registry.Deps{
+		Forges: forges, Queue: queue.NewService(testutil.TestDB(t)),
+		PollInterval: time.Hour, CheckTimeout: time.Hour,
+	})
+	if err := reg.Add(ctx, giteaRef("org", "app")); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "GITEA_MQ_MERGE_REQUIRED_CHECKS") || !strings.Contains(out, "ci / build (pull_request)") {
+		t.Fatalf("expected warning naming the check, got:\n%s", out)
+	}
+	if strings.Contains(out, "ci / lint (push)") {
+		t.Fatalf("push context wrongly flagged:\n%s", out)
 	}
 }
