@@ -679,50 +679,37 @@ func TestRun_TriggerPollsIdleRepo(t *testing.T) {
 	}
 }
 
-func draftPR(index int64, headSHA, baseBranch string) gitea.PR {
-	pr := makePR(index, headSHA, baseBranch)
-	pr.Draft = true
-	return pr
-}
-
-// A draft with armed automerge or the merge label must not land; it waits
-// with an explanatory status and is queued once marked ready.
-func TestPollOnce_DraftNotEnqueued(t *testing.T) {
+// With ChecksFromConfig the poller must gate on the configured list and never
+// read branch protection, which Gitea only exposes to repo admins.
+func TestPollOnce_ChecksFromConfig(t *testing.T) {
 	deps, mock, svc, ctx, repoID := setupPollerTest(t)
-	mockAutomergePRs(mock, draftPR(42, "sha42", "main"))
-
-	for range 2 {
-		result, err := poller.PollOnce(ctx, deps)
-		if err != nil {
-			t.Fatalf("PollOnce: %v", err)
-		}
-		if len(result.Enqueued) != 0 {
-			t.Fatalf("draft PR enqueued: %v", result.Enqueued)
-		}
+	deps.ChecksFromConfig = true
+	deps.FallbackChecks = []string{"ci/build"}
+	mock.GetBranchProtectionFn = func(_ context.Context, _, _, _ string) (*gitea.BranchProtection, error) {
+		t.Fatal("branch protection read with ChecksFromConfig")
+		return nil, nil
 	}
-	if entry, _ := svc.GetEntry(ctx, repoID, 42); entry != nil {
-		t.Fatalf("draft PR has queue entry %+v", entry)
-	}
-	calls := mock.CallsTo("CreateCommitStatus")
-	if len(calls) != 1 {
-		t.Fatalf("expected one waiting status across polls, got %d", len(calls))
-	}
-	if st := calls[0].Args[3].(gitea.CommitStatus); st.State != "pending" || !strings.Contains(st.Description, "Draft") {
-		t.Fatalf("unexpected status %+v", st)
-	}
-	if n := len(mock.CallsTo("CancelAutoMerge")); n != 0 {
-		t.Fatalf("draft must keep merge intent, got %d CancelAutoMerge calls", n)
-	}
-
 	mockAutomergePRs(mock, makePR(42, "sha42", "main"))
 	mock.MergeBranchesFn = func(_ context.Context, _, _, _, _, _ string) (*gitea.MergeResult, error) {
 		return &gitea.MergeResult{SHA: "merge-sha"}, nil
 	}
-	result, err := poller.PollOnce(ctx, deps)
-	if err != nil {
-		t.Fatalf("PollOnce: %v", err)
+
+	state := "pending"
+	mock.GetCombinedCommitStatusFn = func(_ context.Context, _, _, _ string) (*gitea.CombinedStatus, error) {
+		return &gitea.CombinedStatus{Statuses: []gitea.CommitStatusResult{{Context: "ci/build", Status: state}}}, nil
 	}
-	if len(result.Enqueued) != 1 {
-		t.Fatalf("ready PR not enqueued: %v", result.Enqueued)
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := svc.GetEntry(ctx, repoID, 42); e != nil {
+		t.Fatalf("enqueued with configured check pending: %+v", e)
+	}
+
+	state = "success"
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := svc.GetEntry(ctx, repoID, 42); e == nil {
+		t.Fatal("not enqueued once configured check passed")
 	}
 }

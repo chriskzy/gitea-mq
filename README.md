@@ -79,6 +79,8 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_CHECK_TIMEOUT` | no | `1h` | Timeout for required checks |
 | `GITEA_MQ_SKIP_QUEUE_IF_UP_TO_DATE` | no | `true` | Skip the merge-branch CI run when a PR is already rebased onto the target branch tip (its own green CI already covers the merged tree) |
 | `GITEA_MQ_REQUIRED_CHECKS` | no | - | Fallback required CI contexts when branch protection has none (comma-separated) |
+| `GITEA_MQ_REQUIRED_CHECKS_SOURCE` | no | `protection` | `protection`: read required checks from branch protection, falling back to `GITEA_MQ_REQUIRED_CHECKS`. `config`: use `GITEA_MQ_REQUIRED_CHECKS` only and never read branch protection (see [Running without admin rights](#running-without-admin-rights)) |
+| `GITEA_MQ_AUTO_SETUP` | no | `true` | Configure branch protection and webhooks on startup (see [Auto-setup](#auto-setup)) |
 | `GITEA_MQ_MERGE_LABEL` | no | `merge-queue` | Label that enqueues a PR (stack-aware on GitHub); set to `none` to disable |
 | `GITEA_MQ_PRIORITY_LABEL` | no | - | PRs carrying this label are tested ahead of unlabelled ones, without interrupting running tests |
 | `GITEA_MQ_LABEL_PREFIX` | no | `mq/` | Prefix of the queue state labels set on PRs (see [Queue labels](#queue-labels)); set to `none` to disable |
@@ -226,6 +228,30 @@ On startup, gitea-mq configures each managed repository:
 If the GitHub App lacks the Administration permission, auto-setup is skipped
 with a warning and the queue still runs against whatever the operator
 pre-configured.
+
+Set `GITEA_MQ_AUTO_SETUP=false` to leave both untouched, e.g. when branch
+protection and hooks are managed as code.
+
+### Running without admin rights
+
+Gitea only lets repository admins read or edit branch protection. Turning
+auto-setup off removes the edits, but gitea-mq also reads branch protection on
+every queue step to learn the required checks. To run with a token that only
+has write access to the repositories, set both:
+
+```bash
+GITEA_MQ_AUTO_SETUP=false
+GITEA_MQ_REQUIRED_CHECKS_SOURCE=config
+GITEA_MQ_REQUIRED_CHECKS=ci/build,lint
+```
+
+Then do by hand what auto-setup would do: add `gitea-mq` to the branch
+protection's required checks and create a webhook to
+`${GITEA_MQ_EXTERNAL_URL}/webhook/gitea` for status (and pull request) events.
+Topic discovery then picks up repos the token can push to instead of only
+repos it administers. Keep `GITEA_MQ_REQUIRED_CHECKS` in sync with branch
+protection: a check listed only in protection is not waited for on the merge
+branch.
 
 `GITEA_MQ_EXTERNAL_URL` is the externally reachable URL of gitea-mq itself
 (e.g. `https://mq.example.com`), not the Gitea URL. It is used for webhook
@@ -393,6 +419,8 @@ Real-world deployments:
 | `checkTimeout` | string | `1h` | Check timeout |
 | `skipQueueIfUpToDate` | bool | `true` | Skip merge-branch CI for PRs already rebased onto the target tip |
 | `requiredChecks` | list of strings | `[]` | Fallback required CI contexts when branch protection has none |
+| `requiredChecksSource` | enum | `"protection"` | `"config"` uses `requiredChecks` only and never reads branch protection |
+| `autoSetup` | bool | `true` | Configure branch protection and webhooks on startup |
 | `refreshInterval` | string | `10s` | Dashboard refresh interval |
 | `discoveryInterval` | string | `5m` | How often to re-discover repos by topic |
 | `logLevel` | enum | `info` | Log level |

@@ -44,6 +44,11 @@ type Deps struct {
 	SkipQueueIfUpToDate bool
 	BatchMax            int
 	BisectMaxSteps      int
+	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
+	ChecksFromConfig bool
+	// SkipSetup disables EnsureRepoSetup (branch protection and webhook
+	// edits), for tokens without repo admin rights.
+	SkipSetup bool
 }
 
 // RepoRegistry manages the set of active repos. Thread-safe for concurrent
@@ -85,11 +90,13 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		return err
 	}
 
-	if err := f.EnsureRepoSetup(ctx, ref.Owner, ref.Name, forge.SetupConfig{
-		ExternalURL:   r.deps.ExternalURL,
-		WebhookSecret: r.deps.WebhookSecret,
-	}); err != nil {
-		slog.Warn("auto-setup failed", "repo", key, "error", err)
+	if !r.deps.SkipSetup {
+		if err := f.EnsureRepoSetup(ctx, ref.Owner, ref.Name, forge.SetupConfig{
+			ExternalURL:   r.deps.ExternalURL,
+			WebhookSecret: r.deps.WebhookSecret,
+		}); err != nil {
+			slog.Warn("auto-setup failed", "repo", key, "error", err)
+		}
 	}
 
 	repo, err := r.deps.Queue.GetOrCreateRepo(ctx, string(ref.Forge), ref.Owner, ref.Name)
@@ -124,6 +131,8 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 			MergeLabel:     r.deps.MergeLabel,
 			SkipIfUpToDate: r.deps.SkipQueueIfUpToDate,
 			Advance:        triggerPoll,
+
+			ChecksFromConfig: r.deps.ChecksFromConfig,
 		}
 	}
 
@@ -150,6 +159,8 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		CheckTimeout:   r.deps.CheckTimeout,
 		FallbackChecks: r.deps.FallbackChecks,
 		MergeLabel:     r.deps.MergeLabel,
+
+		ChecksFromConfig: r.deps.ChecksFromConfig,
 	}
 	if batchEngine != nil {
 		monDeps.Batch = batchEngine
@@ -174,6 +185,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		Trigger:             trigger,
 		ExternalURL:         r.deps.ExternalURL,
 		FallbackChecks:      r.deps.FallbackChecks,
+		ChecksFromConfig:    r.deps.ChecksFromConfig,
 		MergeLabel:          r.deps.MergeLabel,
 		PriorityLabel:       r.deps.PriorityLabel,
 		LabelPrefix:         r.deps.LabelPrefix,

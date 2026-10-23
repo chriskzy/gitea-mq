@@ -172,12 +172,14 @@ type RepoLister interface {
 
 // Deps holds the dependencies the web handlers need.
 type Deps struct {
-	Queue           *queue.Service
-	Repos           RepoLister
-	Forges          *forge.Set
-	FallbackChecks  []string // from GITEA_MQ_REQUIRED_CHECKS
-	RefreshInterval int      // seconds
-	BasePath        string
+	Queue          *queue.Service
+	Repos          RepoLister
+	Forges         *forge.Set
+	FallbackChecks []string // from GITEA_MQ_REQUIRED_CHECKS
+	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
+	ChecksFromConfig bool
+	RefreshInterval  int // seconds
+	BasePath         string
 }
 
 // NewMux creates an http.ServeMux with the dashboard routes registered.
@@ -461,7 +463,7 @@ func servePRDetail(w http.ResponseWriter, r *http.Request, deps *Deps, ref forge
 
 		var required []string
 		if f != nil {
-			required, err = monitor.ResolveRequiredChecks(ctx, f, owner, name, entry.TargetBranch, deps.FallbackChecks)
+			required, err = monitor.ResolveRequiredChecks(ctx, f, owner, name, entry.TargetBranch, deps.FallbackChecks, deps.ChecksFromConfig)
 			if err != nil {
 				slog.Warn("failed to resolve required checks", "pr", prNumber, "error", err)
 			}

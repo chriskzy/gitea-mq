@@ -32,6 +32,8 @@ type Deps struct {
 	ExternalURL string
 	// FallbackChecks gates enqueue when branch protection lists none.
 	FallbackChecks []string
+	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
+	ChecksFromConfig bool
 	// MergeLabel enqueues labeled PRs (stack-aware on GitHub); empty disables.
 	MergeLabel string
 	// PriorityLabel sorts queued PRs carrying it ahead of others; empty disables.
@@ -134,7 +136,7 @@ func (deps *Deps) isPriority(pr *forge.PR) bool {
 // prCheckResult evaluates the PR's own head-commit checks against the
 // required checks. Reports CheckSuccess when no CI is configured at all.
 func prCheckResult(ctx context.Context, deps *Deps, pr *forge.PR, targetBranch string) (monitor.CheckResult, error) {
-	requiredChecks, err := monitor.ResolveRequiredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, targetBranch, deps.FallbackChecks)
+	requiredChecks, err := monitor.ResolveRequiredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, targetBranch, deps.FallbackChecks, deps.ChecksFromConfig)
 	if err != nil {
 		return monitor.CheckWaiting, fmt.Errorf("resolve required checks for PR #%d: %w", pr.Number, err)
 	}
@@ -198,6 +200,8 @@ func monitorDeps(deps *Deps) *monitor.Deps {
 		CheckTimeout:   deps.CheckTimeout,
 		FallbackChecks: deps.FallbackChecks,
 		MergeLabel:     deps.MergeLabel,
+
+		ChecksFromConfig: deps.ChecksFromConfig,
 	}
 	if deps.Batch.Enabled() {
 		m.Batch = deps.Batch
