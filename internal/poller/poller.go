@@ -34,6 +34,9 @@ type Deps struct {
 	FallbackChecks []string
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
+	// MergeBranchChecks, when set, replaces the required checks on merge
+	// branches; PR-head gating still uses branch protection / FallbackChecks.
+	MergeBranchChecks []string
 	// MergeLabel enqueues labeled PRs (stack-aware on GitHub); empty disables.
 	MergeLabel string
 	// PriorityLabel sorts queued PRs carrying it ahead of others; empty disables.
@@ -201,7 +204,8 @@ func monitorDeps(deps *Deps) *monitor.Deps {
 		FallbackChecks: deps.FallbackChecks,
 		MergeLabel:     deps.MergeLabel,
 
-		ChecksFromConfig: deps.ChecksFromConfig,
+		ChecksFromConfig:  deps.ChecksFromConfig,
+		MergeBranchChecks: deps.MergeBranchChecks,
 	}
 	if deps.Batch.Enabled() {
 		m.Batch = deps.Batch

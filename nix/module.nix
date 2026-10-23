@@ -183,6 +183,16 @@ in
       description = "Cap on CI builds spent bisecting one failing batch. 0 means unlimited.";
     };
 
+    mergeBranchChecks = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Check contexts required on gitea-mq/* merge and batch branches instead
+        of the PR's required checks. Use when some required checks only run on
+        pull request events and can never report on a pushed branch.
+      '';
+    };
+
     requiredChecksSource = lib.mkOption {
       type = lib.types.enum [
         "protection"
@@ -328,6 +338,9 @@ in
       }
       // lib.optionalAttrs (cfg.requiredChecks != [ ]) {
         GITEA_MQ_REQUIRED_CHECKS = lib.concatStringsSep "," cfg.requiredChecks;
+      }
+      // lib.optionalAttrs (cfg.mergeBranchChecks != [ ]) {
+        GITEA_MQ_MERGE_BRANCH_CHECKS = lib.concatStringsSep "," cfg.mergeBranchChecks;
       }
       // lib.optionalAttrs giteaEnabled {
         GITEA_MQ_GITEA_URL = cfg.giteaUrl;
