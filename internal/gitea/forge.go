@@ -38,6 +38,7 @@ var (
 	_ forge.Forge              = (*giteaForge)(nil)
 	_ forge.MergeStacker       = (*giteaForge)(nil)
 	_ forge.DependencyResolver = (*giteaForge)(nil)
+	_ forge.ReviewResolver     = (*giteaForge)(nil)
 )
 
 // StackMerges builds the batch branch in one clone instead of one per member.
@@ -343,4 +344,26 @@ func (f *giteaForge) OpenDependencies(ctx context.Context, owner, name string, n
 		open = append(open, d)
 	}
 	return open, nil
+}
+
+// GetReviews folds the reviews to each reviewer's latest verdict. Only
+// official reviews count, matching what Gitea itself requires to merge;
+// dismissed and stale ones are dropped, as Gitea does when stale approvals
+// are dismissed, since the token may not be able to read that setting.
+func (f *giteaForge) GetReviews(ctx context.Context, owner, name string, number int64) (forge.Reviews, error) {
+	reviews, err := f.client.ListPRReviews(ctx, owner, name, number)
+	if err != nil {
+		return forge.Reviews{}, err
+	}
+	latest := map[string]bool{}
+	for _, r := range reviews {
+		if r.User == nil || !r.Official || r.Dismissed || r.Stale {
+			continue
+		}
+		switch r.State {
+		case "APPROVED", "REQUEST_CHANGES":
+			latest[r.User.Login] = r.State == "APPROVED"
+		}
+	}
+	return forge.FoldReviews(latest), nil
 }

@@ -316,3 +316,34 @@ func TestForge_CancelAutoMerge(t *testing.T) {
 		t.Fatalf("second cancel: %v", err)
 	}
 }
+
+func TestForge_DraftAndReviews(t *testing.T) {
+	srv, f := newTestForge(t)
+	srv.AddPR("org", "app", ghfake.PR{
+		Number: 1, HeadSHA: "sha1", BaseRef: "main", Draft: true,
+		Reviews: []ghfake.Review{
+			{User: "alice", State: "CHANGES_REQUESTED"},
+			{User: "alice", State: "APPROVED"},
+			{User: "bob", State: "APPROVED"},
+			{User: "bob", State: "DISMISSED"},
+			{User: "carol", State: "COMMENTED"},
+		},
+	})
+	ctx := context.Background()
+
+	pr, err := f.GetPR(ctx, "org", "app", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pr.Draft {
+		t.Error("draft PR not reported as draft")
+	}
+
+	rv, err := forge.GetReviews(ctx, f, "org", "app", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rv.Approvals != 1 || rv.ChangesRequested {
+		t.Fatalf("got %+v, want 1 approval (alice), bob dismissed", rv)
+	}
+}
