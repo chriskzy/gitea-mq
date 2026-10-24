@@ -12,14 +12,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Mic92/gitea-mq/internal/failure"
-
 	"github.com/Mic92/gitea-mq/internal/batch"
+	"github.com/Mic92/gitea-mq/internal/failure"
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/merge"
 	"github.com/Mic92/gitea-mq/internal/monitor"
 	"github.com/Mic92/gitea-mq/internal/poller"
 	"github.com/Mic92/gitea-mq/internal/queue"
+	"github.com/Mic92/gitea-mq/internal/retry"
 	"github.com/Mic92/gitea-mq/internal/webhook"
 )
 
@@ -56,6 +56,8 @@ type Deps struct {
 	SkipSetup bool
 	// FailureDetails: see monitor.Deps.
 	FailureDetails failure.Options
+	// Retry is copied per repo with its own Tracker.
+	Retry retry.Policy
 	// Approval: see poller.Deps. Its FromConfig is filled from
 	// ChecksFromConfig.
 	Approval forge.ApprovalPolicy
@@ -127,6 +129,10 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		}
 	}
 
+	retryPolicy := r.deps.Retry
+	if retryPolicy.Patterns != nil {
+		retryPolicy.Tracker = retry.NewTracker()
+	}
 	var batchEngine *batch.Engine
 	if r.deps.BatchMax != 1 {
 		batchEngine = &batch.Engine{
@@ -144,6 +150,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 			SkipIfUpToDate: r.deps.SkipQueueIfUpToDate,
 			Approval:       r.approvalPolicy(),
 			FailureDetails: r.deps.FailureDetails,
+			Retry:          retryPolicy,
 			Advance:        triggerPoll,
 
 			ChecksFromConfig: r.deps.ChecksFromConfig,
@@ -178,6 +185,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		ChecksFromConfig: r.deps.ChecksFromConfig,
 		MergeChecks:      r.deps.MergeChecks,
 		FailureDetails:   r.deps.FailureDetails,
+		Retry:            retryPolicy,
 	}
 	if batchEngine != nil {
 		monDeps.Batch = batchEngine
@@ -209,6 +217,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		PriorityLabel:       r.deps.PriorityLabel,
 		Approval:            r.approvalPolicy(),
 		FailureDetails:      r.deps.FailureDetails,
+		Retry:               retryPolicy,
 		LabelPrefix:         r.deps.LabelPrefix,
 		SuccessTimeout:      r.deps.SuccessTimeout,
 		CheckTimeout:        r.deps.CheckTimeout,

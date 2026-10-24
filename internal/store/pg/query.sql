@@ -139,7 +139,8 @@ UPDATE batches SET
     builds = $9,
     ff_retries = $10,
     flaky = $11,
-    testing_started_at = $12
+    testing_started_at = $12,
+    infra_retries = $13
 WHERE id = $1 AND state IN ('forming', 'testing')
 RETURNING *;
 
@@ -175,3 +176,8 @@ ORDER BY r.forge, r.owner, r.name, e.kind, e.reason;
 
 -- name: PruneEvents :execrows
 DELETE FROM queue_events WHERE created_at < $1;
+
+-- name: IncrementEntryInfraRetries :one
+UPDATE queue_entries SET infra_retries = infra_retries + 1
+WHERE id = $1
+RETURNING infra_retries;

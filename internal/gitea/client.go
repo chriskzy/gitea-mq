@@ -220,6 +220,10 @@ type Client interface {
 	// GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs
 	GetJobLogs(ctx context.Context, owner, repo string, jobID int64) ([]byte, error)
 
+	// RerunJob reruns one Actions job (and the jobs that depend on it).
+	// POST /repos/{owner}/{repo}/actions/runs/{run}/jobs/{job_id}/rerun
+	RerunJob(ctx context.Context, owner, repo string, runID, jobID int64) error
+
 	// ListRuns lists recent Actions runs (newest first), to map a run number
 	// from a web URL to its ID.
 	// GET /repos/{owner}/{repo}/actions/runs

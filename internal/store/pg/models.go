@@ -161,6 +161,7 @@ type Batch struct {
 	Flaky            bool               `json:"flaky"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	TestingStartedAt pgtype.Timestamptz `json:"testing_started_at"`
+	InfraRetries     int32              `json:"infra_retries"`
 }
 
 type CheckStatus struct {
@@ -187,6 +188,7 @@ type QueueEntry struct {
 	ErrorMessage     pgtype.Text        `json:"error_message"`
 	ActiveBatchID    pgtype.Int8        `json:"active_batch_id"`
 	Priority         bool               `json:"priority"`
+	InfraRetries     int32              `json:"infra_retries"`
 }
 
 type QueueEvent struct {

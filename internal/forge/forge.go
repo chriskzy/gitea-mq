@@ -422,3 +422,9 @@ type JobLogFetcher interface {
 	// JobLog returns the job's name and (the tail of) its log.
 	JobLog(ctx context.Context, owner, name, targetURL string) (job string, log []byte, err error)
 }
+
+// JobRerunner is optionally implemented by forges with built-in CI that can
+// rerun the job behind a status target URL on the same commit.
+type JobRerunner interface {
+	RerunJob(ctx context.Context, owner, name, targetURL string) error
+}

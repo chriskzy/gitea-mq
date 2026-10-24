@@ -23,6 +23,9 @@ func (e *Engine) HandleCheck(ctx context.Context, entry *pg.QueueEntry, checkCtx
 		return nil
 	}
 
+	if e.Retry.Tracker.Suppress(b.BranchSha.String, checkCtx, state == pg.CheckStateFailure || state == pg.CheckStateError) {
+		return nil
+	}
 	if err := e.Queue.SaveCheckStatus(ctx, entry.ID, checkCtx, state, targetURL); err != nil {
 		return err
 	}

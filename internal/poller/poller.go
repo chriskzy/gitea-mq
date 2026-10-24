@@ -9,14 +9,14 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Mic92/gitea-mq/internal/failure"
-
 	"github.com/Mic92/gitea-mq/internal/batch"
+	"github.com/Mic92/gitea-mq/internal/failure"
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/logutil"
 	"github.com/Mic92/gitea-mq/internal/merge"
 	"github.com/Mic92/gitea-mq/internal/monitor"
 	"github.com/Mic92/gitea-mq/internal/queue"
+	"github.com/Mic92/gitea-mq/internal/retry"
 	"github.com/Mic92/gitea-mq/internal/store/pg"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -45,6 +45,8 @@ type Deps struct {
 	MergeChecks *[]string
 	// FailureDetails: see monitor.Deps.
 	FailureDetails failure.Options
+	// Retry: see monitor.Deps.
+	Retry retry.Policy
 	// MergeLabel enqueues labeled PRs (stack-aware on GitHub); empty disables.
 	MergeLabel string
 	// PriorityLabel sorts queued PRs carrying it ahead of others; empty disables.
@@ -249,6 +251,7 @@ func monitorDeps(deps *Deps) *monitor.Deps {
 		ChecksFromConfig: deps.ChecksFromConfig,
 		MergeChecks:      deps.MergeChecks,
 		FailureDetails:   deps.FailureDetails,
+		Retry:            deps.Retry,
 	}
 	if deps.Batch.Enabled() {
 		m.Batch = deps.Batch
