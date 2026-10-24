@@ -61,6 +61,9 @@ type Config struct {
 	// RequiredApprovals is how many approvals are needed; 0 = from branch
 	// protection when readable, else 1.
 	RequiredApprovals int
+	// RequiredDistinctReviewers is a floor on approvals from distinct
+	// reviewer accounts; 0 = no floor.
+	RequiredDistinctReviewers int
 	// EnqueueOnApproval lets an approved PR enter the queue without
 	// automerge or the merge label. Implies RequireApproval.
 	EnqueueOnApproval bool
@@ -232,6 +235,10 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.RequiredApprovals, err = parseInt("GITEA_MQ_REQUIRED_APPROVALS", 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	cfg.RequiredDistinctReviewers, err = parseInt("GITEA_MQ_REQUIRED_DISTINCT_REVIEWERS", 0, 0)
 	if err != nil {
 		return nil, err
 	}

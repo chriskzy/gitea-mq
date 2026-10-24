@@ -28,6 +28,9 @@ const (
 	EventBatchFormed   EventKind = "batch_formed"
 	EventBatchBisected EventKind = "batch_bisected"
 	EventBatchLanded   EventKind = "batch_landed"
+	// EventReviewConflict: the approval gate saw conflicting reviews at a
+	// PR head. Recorded once per head.
+	EventReviewConflict EventKind = "review_conflict"
 )
 
 // Event is one queue transition. Zero PRNumber/BatchID are stored as NULL.
@@ -157,4 +160,12 @@ func (s *Service) SummarizeEvents(ctx context.Context, since time.Time, repoID i
 // PruneEvents deletes events older than before and returns how many.
 func (s *Service) PruneEvents(ctx context.Context, before time.Time) (int64, error) {
 	return s.queries().PruneEvents(ctx, pgtype.Timestamptz{Time: before, Valid: true})
+}
+
+// HasEvent reports whether an event of kind was recorded for PR number at
+// head.
+func (s *Service) HasEvent(ctx context.Context, repoID int64, kind EventKind, number int64, head string) (bool, error) {
+	return s.queries().HasEvent(ctx, pg.HasEventParams{
+		RepoID: repoID, Kind: string(kind), PrNumber: pgtype.Int8{Int64: number, Valid: true}, HeadSha: head,
+	})
 }

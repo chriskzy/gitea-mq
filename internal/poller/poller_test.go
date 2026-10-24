@@ -992,3 +992,44 @@ func TestPollOnce_RequiredApprovalsFromProtection(t *testing.T) {
 		})
 	}
 }
+
+// Approve-then-reject by one account at the head names both reviews in the
+// status, records one review_conflict per head, and a new approval clears it.
+func TestPollOnce_ReviewConflictAtHead(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	deps.Approval = forge.ApprovalPolicy{Require: true, Count: 1}
+	mockAutomergePRs(mock, makePR(42, "sha42", "main"))
+	mergeOK(mock)
+	reviews := []gitea.PRReview{
+		{ID: 5, User: &gitea.User{Login: "bot"}, State: "APPROVED", Official: true, CommitID: "old"},
+		{ID: 11, User: &gitea.User{Login: "bot"}, State: "APPROVED", Official: true, CommitID: "sha42"},
+		{ID: 12, User: &gitea.User{Login: "bot"}, State: "REQUEST_CHANGES", Official: true, CommitID: "sha42"},
+	}
+	mock.ListPRReviewsFn = func(context.Context, string, string, int64) ([]gitea.PRReview, error) { return reviews, nil }
+
+	for range 2 {
+		if _, err := poller.PollOnce(ctx, deps); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if e, _ := svc.GetEntry(ctx, repoID, 42); e != nil {
+		t.Fatalf("PR with conflicting reviews enqueued")
+	}
+	calls := mock.CallsTo("CreateCommitStatus")
+	if len(calls) == 0 || calls[0].Args[3].(gitea.CommitStatus).Description != "Conflicting reviews at head: #11 approved, #12 changes requested" {
+		t.Fatalf("status = %v", calls)
+	}
+	evs, _ := svc.ListEvents(ctx, queue.EventFilter{RepoID: repoID, Kind: queue.EventReviewConflict, Limit: 10})
+	if len(evs) != 1 || evs[0].HeadSha != "sha42" {
+		t.Fatalf("review_conflict events = %+v", evs)
+	}
+
+	reviews = append(reviews, gitea.PRReview{ID: 13, User: &gitea.User{Login: "bot"}, State: "APPROVED", Official: true, CommitID: "sha42"})
+	result, err := poller.PollOnce(ctx, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Enqueued) != 1 {
+		t.Fatalf("re-approved PR not enqueued: %+v", result)
+	}
+}

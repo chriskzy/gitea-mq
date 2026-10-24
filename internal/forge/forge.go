@@ -4,9 +4,11 @@
 package forge
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Mic92/gitea-mq/internal/store/pg"
@@ -373,6 +375,117 @@ func BlockedComment(deps []Dependency, owner, name string) string {
 type Reviews struct {
 	Approvals        int
 	ChangesRequested bool
+	// Conflicts lists the reviews behind a split verdict at the head: an
+	// approval overridden by a later change request from the same reviewer,
+	// or approvals standing next to another reviewer's change request.
+	// Oldest first; empty when the verdict is unanimous.
+	Conflicts []ReviewRef
+}
+
+// ReviewRef names one review in a conflict.
+type ReviewRef struct {
+	ID       int64
+	User     string
+	Approved bool
+}
+
+// ReviewVerdict is one approving, blocking or dismissing review as the forge
+// reports it, input to FoldAtHead.
+type ReviewVerdict struct {
+	ID       int64
+	User     string
+	CommitID string
+	State    VerdictState
+	// History marks a review the forge no longer counts (Gitea dismisses a
+	// reviewer's review when they submit a newer one). It never counts, but
+	// an approval in history still shows a later change request as a flip.
+	History bool
+}
+
+// VerdictState is a review's effect on the approval gate.
+type VerdictState int
+
+const (
+	VerdictApprove VerdictState = iota
+	VerdictRequestChanges
+	// VerdictDismiss clears the reviewer's earlier verdict.
+	VerdictDismiss
+)
+
+// FoldAtHead folds reviews (oldest first) to each reviewer's latest verdict,
+// counting only reviews on head; a review without a commit ID counts, and an
+// empty head disables the filter. It also reports conflicting reviews.
+func FoldAtHead(reviews []ReviewVerdict, head string) Reviews {
+	latest := map[string]ReviewVerdict{}
+	// Each reviewer's latest approval at head, kept when a later change
+	// request overrides it so the flip can be shown.
+	approvedAt := map[string]ReviewVerdict{}
+	var order []string
+	for _, r := range reviews {
+		if r.User == "" || (head != "" && r.CommitID != "" && r.CommitID != head) {
+			continue
+		}
+		if r.History {
+			if r.State == VerdictApprove {
+				if _, seen := latest[r.User]; !seen {
+					order = append(order, r.User)
+				}
+				approvedAt[r.User] = r
+			}
+			continue
+		}
+		if _, seen := latest[r.User]; !seen {
+			if _, seen = approvedAt[r.User]; !seen {
+				order = append(order, r.User)
+			}
+		}
+		switch r.State {
+		case VerdictDismiss:
+			delete(latest, r.User)
+			delete(approvedAt, r.User)
+		case VerdictApprove:
+			latest[r.User] = r
+			approvedAt[r.User] = r
+		case VerdictRequestChanges:
+			latest[r.User] = r
+		}
+	}
+	var out Reviews
+	var approvals, rejects []ReviewRef
+	for _, u := range order {
+		r, ok := latest[u]
+		if !ok {
+			continue
+		}
+		if r.State == VerdictApprove {
+			out.Approvals++
+			approvals = append(approvals, ReviewRef{ID: r.ID, User: u, Approved: true})
+			continue
+		}
+		out.ChangesRequested = true
+		if a, ok := approvedAt[u]; ok {
+			approvals = append(approvals, ReviewRef{ID: a.ID, User: u, Approved: true})
+		}
+		rejects = append(rejects, ReviewRef{ID: r.ID, User: u})
+	}
+	if len(approvals) > 0 && len(rejects) > 0 {
+		out.Conflicts = append(approvals, rejects...)
+		slices.SortFunc(out.Conflicts, func(a, b ReviewRef) int { return cmp.Compare(a.ID, b.ID) })
+	}
+	return out
+}
+
+// ConflictStatus is the MQ status description for conflicting reviews.
+func ConflictStatus(c []ReviewRef) string {
+	parts := make([]string, len(c))
+	for i, r := range c {
+		verdict := "changes requested"
+		if r.Approved {
+			verdict = "approved"
+		}
+		parts[i] = fmt.Sprintf("#%d %s", r.ID, verdict)
+	}
+	return "Conflicting reviews at head: " + strings.Join(parts, ", ")
 }
 
 // Approved reports whether at least min approvals are present and nobody
@@ -381,33 +494,20 @@ func (r Reviews) Approved(min int) bool {
 	return !r.ChangesRequested && r.Approvals >= min
 }
 
-// FoldReviews counts each reviewer's latest verdict (true = approved, false =
-// changes requested).
-func FoldReviews(latest map[string]bool) Reviews {
-	var out Reviews
-	for _, approved := range latest {
-		if approved {
-			out.Approvals++
-		} else {
-			out.ChangesRequested = true
-		}
-	}
-	return out
-}
-
 // ReviewResolver is implemented by forges that expose PR reviews.
 type ReviewResolver interface {
-	GetReviews(ctx context.Context, owner, name string, number int64) (Reviews, error)
+	// GetReviews returns the verdict at head ("" = every non-stale review).
+	GetReviews(ctx context.Context, owner, name string, number int64, head string) (Reviews, error)
 }
 
 // ErrReviewsUnsupported is returned by GetReviews for forges without reviews.
 var ErrReviewsUnsupported = errors.New("forge: reviews not supported")
 
 // GetReviews returns the PR's review verdict.
-func GetReviews(ctx context.Context, f Forge, owner, name string, number int64) (Reviews, error) {
+func GetReviews(ctx context.Context, f Forge, owner, name string, number int64, head string) (Reviews, error) {
 	rr, ok := f.(ReviewResolver)
 	if !ok {
 		return Reviews{}, ErrReviewsUnsupported
 	}
-	return rr.GetReviews(ctx, owner, name, number)
+	return rr.GetReviews(ctx, owner, name, number, head)
 }

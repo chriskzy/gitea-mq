@@ -642,7 +642,7 @@ type reviewForge struct {
 	approved map[int64]bool
 }
 
-func (r *reviewForge) GetReviews(_ context.Context, _, _ string, n int64) (forge.Reviews, error) {
+func (r *reviewForge) GetReviews(_ context.Context, _, _ string, n int64, _ string) (forge.Reviews, error) {
 	if r.approved[n] {
 		return forge.Reviews{Approvals: 1}, nil
 	}

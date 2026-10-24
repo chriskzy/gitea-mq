@@ -299,7 +299,7 @@ func TestGetReviews_LatestOfficialPerUser(t *testing.T) {
 		}, nil
 	}
 	f := gitea.NewForge(mock, "https://gitea.example.com")
-	rv, err := forge.GetReviews(context.Background(), f, "o", "r", 1)
+	rv, err := forge.GetReviews(context.Background(), f, "o", "r", 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}

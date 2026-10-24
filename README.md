@@ -86,6 +86,7 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_MERGE_LABEL` | no | `merge-queue` | Label that enqueues a PR (stack-aware on GitHub); set to `none` to disable |
 | `GITEA_MQ_REQUIRE_APPROVAL` | no | `false` | Keep PRs out of the queue until approved, and re-check right before landing (see [Approvals](#approvals)) |
 | `GITEA_MQ_REQUIRED_APPROVALS` | no | `0` | Approvals needed. `0` = take it from branch protection when readable, else 1 |
+| `GITEA_MQ_REQUIRED_DISTINCT_REVIEWERS` | no | `0` | Minimum approvals from distinct reviewer accounts; raises the count above when higher |
 | `GITEA_MQ_ENQUEUE_ON_APPROVAL` | no | `false` | Approval counts as merge intent: an approved PR with green CI is queued without automerge or the merge label. Implies `GITEA_MQ_REQUIRE_APPROVAL` |
 | `GITEA_MQ_PRIORITY_LABEL` | no | - | PRs carrying this label are tested ahead of unlabelled ones, without interrupting running tests |
 | `GITEA_MQ_LABEL_PREFIX` | no | `mq/` | Prefix of the queue state labels set on PRs (see [Queue labels](#queue-labels)); set to `none` to disable |
@@ -158,9 +159,19 @@ bypasses the forge's own merge checks.
 How many approvals: `GITEA_MQ_REQUIRED_APPROVALS`, or, when it is `0`, the
 branch protection's *required approvals* (read only if the token may read
 protection and `GITEA_MQ_REQUIRED_CHECKS_SOURCE` is not `config`), with 1 as
-the floor. Each reviewer's latest review counts; dismissed reviews are
-ignored. On Gitea only official reviews (from users allowed to approve) count,
-and stale ones (made before the latest push) are ignored.
+the floor. `GITEA_MQ_REQUIRED_DISTINCT_REVIEWERS=N` raises that to at least N
+approvals from distinct accounts. Each reviewer account has one verdict, its
+latest review; dismissed reviews are ignored. On Gitea only official reviews
+(from users allowed to approve) count, and only reviews submitted on the
+current head commit are evaluated.
+
+When reviews at the head disagree, the `gitea-mq` status names them, e.g.
+`Conflicting reviews at head: #11 approved, #12 changes requested`. This
+happens when one account approves and later requests changes (common when
+several automated reviewers post as the same user), or when one reviewer
+approves while another requests changes. A `review_conflict` event with the
+review IDs and accounts is recorded once per head. A new approval at the head
+from the account that requested changes clears it; so does a push.
 
 `GITEA_MQ_ENQUEUE_ON_APPROVAL=true` additionally makes approval itself the
 merge signal: an approved, non-draft PR with green CI enters the queue without
