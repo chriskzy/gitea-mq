@@ -358,22 +358,30 @@ func (f *giteaForge) OpenDependencies(ctx context.Context, owner, name string, n
 // official reviews count, matching what Gitea itself requires to merge;
 // dismissed and stale ones are dropped, as Gitea does when stale approvals
 // are dismissed, since the token may not be able to read that setting.
-func (f *giteaForge) GetReviews(ctx context.Context, owner, name string, number int64) (forge.Reviews, error) {
+func (f *giteaForge) GetReviews(ctx context.Context, owner, name string, number int64, head string) (forge.Reviews, error) {
 	reviews, err := f.client.ListPRReviews(ctx, owner, name, number)
 	if err != nil {
 		return forge.Reviews{}, err
 	}
-	latest := map[string]bool{}
+	var vs []forge.ReviewVerdict
 	for _, r := range reviews {
-		if r.User == nil || !r.Official || r.Dismissed || r.Stale {
+		if r.User == nil || r.Stale || (!r.Official && !r.Dismissed) {
 			continue
 		}
+		// Gitea dismisses a reviewer's older review when they submit a
+		// newer one; keep it as history so a flip can be shown.
+		v := forge.ReviewVerdict{ID: r.ID, User: r.User.Login, CommitID: r.CommitID, History: r.Dismissed}
 		switch r.State {
-		case "APPROVED", "REQUEST_CHANGES":
-			latest[r.User.Login] = r.State == "APPROVED"
+		case "APPROVED":
+			v.State = forge.VerdictApprove
+		case "REQUEST_CHANGES":
+			v.State = forge.VerdictRequestChanges
+		default:
+			continue
 		}
+		vs = append(vs, v)
 	}
-	return forge.FoldReviews(latest), nil
+	return forge.FoldAtHead(vs, head), nil
 }
 
 func (f *giteaForge) RequiredApprovals(ctx context.Context, owner, name, branch string) (int, error) {

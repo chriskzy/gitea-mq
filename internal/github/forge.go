@@ -530,24 +530,32 @@ func (f *githubForge) Comment(ctx context.Context, owner, name string, number in
 
 // GetReviews folds reviews to each reviewer's latest verdict; a dismissal
 // clears that reviewer's earlier approval or change request.
-func (f *githubForge) GetReviews(ctx context.Context, owner, name string, number int64) (forge.Reviews, error) {
+func (f *githubForge) GetReviews(ctx context.Context, owner, name string, number int64, _ string) (forge.Reviews, error) {
 	c, err := f.app.ClientForRepo(owner, name)
 	if err != nil {
 		return forge.Reviews{}, err
 	}
-	latest := map[string]bool{}
+	var vs []forge.ReviewVerdict
 	opts := &gh.ListOptions{PerPage: 100}
 	for r, err := range c.PullRequests.ListReviewsIter(ctx, owner, name, int(number), opts) {
 		if err != nil {
 			return forge.Reviews{}, err
 		}
-		login := r.GetUser().GetLogin()
+		v := forge.ReviewVerdict{ID: r.GetID(), User: r.GetUser().GetLogin(), CommitID: r.GetCommitID()}
 		switch r.GetState() {
-		case "APPROVED", "CHANGES_REQUESTED":
-			latest[login] = r.GetState() == "APPROVED"
+		case "APPROVED":
+			v.State = forge.VerdictApprove
+		case "CHANGES_REQUESTED":
+			v.State = forge.VerdictRequestChanges
 		case "DISMISSED":
-			delete(latest, login)
+			// A dismissal clears the verdict whatever head it was on.
+			v.State, v.CommitID = forge.VerdictDismiss, ""
+		default:
+			continue
 		}
+		vs = append(vs, v)
 	}
-	return forge.FoldReviews(latest), nil
+	// GitHub keeps approvals across pushes unless branch protection
+	// dismisses them, so verdicts are not filtered by head here.
+	return forge.FoldAtHead(vs, ""), nil
 }

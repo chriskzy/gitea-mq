@@ -441,7 +441,7 @@ const sourceApproval = "approval"
 // waiting status when it does not. Always true when approvals are not
 // required.
 func approvalGate(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR) bool {
-	ok, rv, needed, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, pr.BaseBranch, pr.Number)
+	ok, rv, needed, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, pr.BaseBranch, pr.Number, pr.HeadSHA)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("get reviews of PR #%d: %w", pr.Number, err))
 		return false
@@ -449,11 +449,10 @@ func approvalGate(ctx context.Context, deps *Deps, result *PollResult, pr *forge
 	if ok {
 		return true
 	}
-	desc := fmt.Sprintf("Waiting for approval (%d/%d)", rv.Approvals, needed)
-	if rv.ChangesRequested {
-		desc = "Changes requested: waiting for approval"
+	if len(rv.Conflicts) > 0 {
+		recordReviewConflict(ctx, deps, pr, rv.Conflicts)
 	}
-	markWaiting(ctx, deps, pr.Number, pr.HeadSHA, desc)
+	markWaiting(ctx, deps, pr.Number, pr.HeadSHA, forge.WaitingStatus(rv, needed))
 	return false
 }
 
@@ -477,7 +476,7 @@ func enqueueApprovedPRs(ctx context.Context, deps *Deps, result *PollResult, ope
 		if existing != nil {
 			continue
 		}
-		ok, _, _, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, pr.BaseBranch, pr.Number)
+		ok, _, _, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, pr.BaseBranch, pr.Number, pr.HeadSHA)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("get reviews of PR #%d: %w", pr.Number, err))
 			continue
@@ -643,7 +642,7 @@ func reconcileEntries(ctx context.Context, deps *Deps, result *PollResult, openP
 		// never ejects a PR.
 		approved := true
 		if isOpen && deps.Approval.Require {
-			if ok, _, _, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, entry.TargetBranch, pr.Number); err != nil {
+			if ok, _, _, err := deps.Approval.Check(ctx, deps.Forge, deps.Owner, deps.Repo, entry.TargetBranch, pr.Number, pr.HeadSHA); err != nil {
 				result.Errors = append(result.Errors, fmt.Errorf("get reviews of PR #%d: %w", pr.Number, err))
 			} else {
 				approved = ok
@@ -1056,4 +1055,22 @@ func holdIfBlocked(ctx context.Context, deps *Deps, result *PollResult, entry *p
 		}
 	}
 	return true
+}
+
+// recordReviewConflict emits one review_conflict event per PR head.
+func recordReviewConflict(ctx context.Context, deps *Deps, pr *forge.PR, conflicts []forge.ReviewRef) {
+	seen, err := deps.Queue.HasEvent(ctx, deps.RepoID, queue.EventReviewConflict, pr.Number, pr.HeadSHA)
+	if err != nil || seen {
+		return
+	}
+	refs := make([]map[string]any, len(conflicts))
+	for i, c := range conflicts {
+		refs[i] = map[string]any{"id": c.ID, "user": c.User, "approved": c.Approved}
+	}
+	slog.Info("conflicting reviews at head", "pr", pr.Number, "head", pr.HeadSHA, "reviews", len(conflicts))
+	deps.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: deps.RepoID, Kind: queue.EventReviewConflict, PRNumber: pr.Number,
+		TargetBranch: pr.BaseBranch, HeadSHA: pr.HeadSHA, Reason: "approval_gate",
+		Detail: map[string]any{"reviews": refs},
+	})
 }

@@ -412,6 +412,32 @@ func (q *Queries) GetQueueEntry(ctx context.Context, arg GetQueueEntryParams) (Q
 	return i, err
 }
 
+const hasEvent = `-- name: HasEvent :one
+SELECT EXISTS (
+    SELECT 1 FROM queue_events
+    WHERE repo_id = $1 AND kind = $2 AND pr_number = $3 AND head_sha = $4
+)
+`
+
+type HasEventParams struct {
+	RepoID   int64       `json:"repo_id"`
+	Kind     string      `json:"kind"`
+	PrNumber pgtype.Int8 `json:"pr_number"`
+	HeadSha  string      `json:"head_sha"`
+}
+
+func (q *Queries) HasEvent(ctx context.Context, arg HasEventParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasEvent,
+		arg.RepoID,
+		arg.Kind,
+		arg.PrNumber,
+		arg.HeadSha,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const incrementEntryInfraRetries = `-- name: IncrementEntryInfraRetries :one
 UPDATE queue_entries SET infra_retries = infra_retries + 1
 WHERE id = $1

@@ -153,6 +153,12 @@ INSERT INTO queue_events (repo_id, kind, pr_number, batch_id, target_branch, hea
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING id, created_at;
 
+-- name: HasEvent :one
+SELECT EXISTS (
+    SELECT 1 FROM queue_events
+    WHERE repo_id = $1 AND kind = $2 AND pr_number = $3 AND head_sha = $4
+);
+
 -- name: ListEvents :many
 SELECT e.id, e.kind, e.pr_number, e.batch_id, e.target_branch, e.head_sha, e.reason, e.detail, e.created_at,
        r.forge, r.owner, r.name
