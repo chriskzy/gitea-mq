@@ -63,6 +63,9 @@ func run() error {
 		"idle_poll_interval", cfg.IdlePollInterval,
 		"check_timeout", cfg.CheckTimeout,
 		"batch_max", cfg.BatchMax,
+		"require_approval", cfg.RequireApproval,
+		"required_approvals", cfg.RequiredApprovals,
+		"enqueue_on_approval", cfg.EnqueueOnApproval,
 	)
 
 	// Graceful shutdown context.
@@ -117,16 +120,21 @@ func run() error {
 
 	// Create the repo registry — central coordination for managed repos.
 	reg := registry.New(ctx, &registry.Deps{
-		Forges:              forges,
-		Queue:               queueSvc,
-		WebhookSecret:       giteaWebhookSecret,
-		ExternalURL:         cfg.ExternalURL,
-		PollInterval:        cfg.PollInterval,
-		IdlePollInterval:    cfg.IdlePollInterval,
-		CheckTimeout:        cfg.CheckTimeout,
-		FallbackChecks:      cfg.RequiredChecks,
-		MergeLabel:          cfg.MergeLabel,
-		PriorityLabel:       cfg.PriorityLabel,
+		Forges:           forges,
+		Queue:            queueSvc,
+		WebhookSecret:    giteaWebhookSecret,
+		ExternalURL:      cfg.ExternalURL,
+		PollInterval:     cfg.PollInterval,
+		IdlePollInterval: cfg.IdlePollInterval,
+		CheckTimeout:     cfg.CheckTimeout,
+		FallbackChecks:   cfg.RequiredChecks,
+		MergeLabel:       cfg.MergeLabel,
+		PriorityLabel:    cfg.PriorityLabel,
+		Approval: forge.ApprovalPolicy{
+			Require:    cfg.RequireApproval,
+			Count:      cfg.RequiredApprovals,
+			OnApproval: cfg.EnqueueOnApproval,
+		},
 		LabelPrefix:         cfg.LabelPrefix,
 		SuccessTimeout:      5 * time.Minute,
 		SkipQueueIfUpToDate: cfg.SkipQueueIfUpToDate,

@@ -183,6 +183,24 @@ in
       description = "Cap on CI builds spent bisecting one failing batch. 0 means unlimited.";
     };
 
+    requireApproval = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Keep PRs out of the queue until they are approved, and re-check before landing.";
+    };
+
+    requiredApprovals = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+      description = "Approvals needed when requireApproval is set. 0 reads it from branch protection when readable, else 1.";
+    };
+
+    enqueueOnApproval = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Treat approval as merge intent: queue approved PRs without automerge or the merge label. Implies requireApproval.";
+    };
+
     refreshInterval = lib.mkOption {
       type = lib.types.str;
       default = "10s";
@@ -295,6 +313,9 @@ in
         GITEA_MQ_SKIP_QUEUE_IF_UP_TO_DATE = lib.boolToString cfg.skipQueueIfUpToDate;
         GITEA_MQ_BATCH_MAX = toString cfg.batchMax;
         GITEA_MQ_BISECT_MAX_STEPS = toString cfg.bisectMaxSteps;
+        GITEA_MQ_REQUIRE_APPROVAL = lib.boolToString cfg.requireApproval;
+        GITEA_MQ_REQUIRED_APPROVALS = toString cfg.requiredApprovals;
+        GITEA_MQ_ENQUEUE_ON_APPROVAL = lib.boolToString cfg.enqueueOnApproval;
         GITEA_MQ_REFRESH_INTERVAL = cfg.refreshInterval;
         GITEA_MQ_DISCOVERY_INTERVAL = cfg.discoveryInterval;
         GITEA_MQ_LOG_LEVEL = cfg.logLevel;

@@ -37,6 +37,13 @@ type PR struct {
 	AutoMerge bool
 	HTMLURL   string
 	Labels    []string
+	// Reviews feeds GET /pulls/{n}/reviews, oldest first.
+	Reviews []Review
+}
+
+type Review struct {
+	User  string
+	State string // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED
 }
 
 type CheckRun struct {
@@ -267,6 +274,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+apiV3+"/repos/{o}/{r}/pulls", s.hCreatePR)
 	mux.HandleFunc("GET "+apiV3+"/repos/{o}/{r}/pulls/{n}", s.hGetPR)
 	mux.HandleFunc("PATCH "+apiV3+"/repos/{o}/{r}/pulls/{n}", s.hEditPR)
+	mux.HandleFunc("GET "+apiV3+"/repos/{o}/{r}/pulls/{n}/reviews", s.hListReviews)
 
 	// Issues (comments).
 	mux.HandleFunc("POST "+apiV3+"/repos/{o}/{r}/issues/{n}/comments", s.hCreateComment)
@@ -474,6 +482,28 @@ func (s *Server) hGetPR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, prJSON(rp.Owner, rp.Name, p))
+}
+
+func (s *Server) hListReviews(w http.ResponseWriter, r *http.Request) {
+	rp, ok := s.repoOr404(w, r)
+	if !ok {
+		return
+	}
+	n, _ := strconv.ParseInt(r.PathValue("n"), 10, 64)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := rp.PRs[n]
+	if p == nil {
+		http.NotFound(w, r)
+		return
+	}
+	out := make([]map[string]any, 0, len(p.Reviews))
+	for i, rv := range p.Reviews {
+		out = append(out, map[string]any{
+			"id": i + 1, "state": rv.State, "user": map[string]any{"login": rv.User},
+		})
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) hEditPR(w http.ResponseWriter, r *http.Request) {

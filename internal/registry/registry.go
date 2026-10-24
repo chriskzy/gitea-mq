@@ -44,6 +44,8 @@ type Deps struct {
 	SkipQueueIfUpToDate bool
 	BatchMax            int
 	BisectMaxSteps      int
+	// Approval: see poller.Deps.
+	Approval forge.ApprovalPolicy
 }
 
 // RepoRegistry manages the set of active repos. Thread-safe for concurrent
@@ -123,6 +125,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 			FallbackChecks: r.deps.FallbackChecks,
 			MergeLabel:     r.deps.MergeLabel,
 			SkipIfUpToDate: r.deps.SkipQueueIfUpToDate,
+			Approval:       r.approvalPolicy(),
 			Advance:        triggerPoll,
 		}
 	}
@@ -176,6 +179,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		FallbackChecks:      r.deps.FallbackChecks,
 		MergeLabel:          r.deps.MergeLabel,
 		PriorityLabel:       r.deps.PriorityLabel,
+		Approval:            r.approvalPolicy(),
 		LabelPrefix:         r.deps.LabelPrefix,
 		SuccessTimeout:      r.deps.SuccessTimeout,
 		CheckTimeout:        r.deps.CheckTimeout,
@@ -297,4 +301,8 @@ func (r *RepoRegistry) Keys() map[string]struct{} {
 		keys[k] = struct{}{}
 	}
 	return keys
+}
+
+func (r *RepoRegistry) approvalPolicy() forge.ApprovalPolicy {
+	return r.deps.Approval
 }

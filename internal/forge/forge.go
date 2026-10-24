@@ -357,3 +357,47 @@ func BlockedComment(deps []Dependency, owner, name string) string {
 		"The merge stays scheduled: the PR re-enters the queue on its own once that is closed.",
 		DependencyRefs(deps, owner, name))
 }
+
+// Reviews is the current review verdict on a PR: each reviewer's latest
+// approving or blocking review, ignoring comments and dismissed reviews.
+type Reviews struct {
+	Approvals        int
+	ChangesRequested bool
+}
+
+// Approved reports whether at least min approvals are present and nobody
+// requested changes.
+func (r Reviews) Approved(min int) bool {
+	return !r.ChangesRequested && r.Approvals >= min
+}
+
+// FoldReviews counts each reviewer's latest verdict (true = approved, false =
+// changes requested).
+func FoldReviews(latest map[string]bool) Reviews {
+	var out Reviews
+	for _, approved := range latest {
+		if approved {
+			out.Approvals++
+		} else {
+			out.ChangesRequested = true
+		}
+	}
+	return out
+}
+
+// ReviewResolver is implemented by forges that expose PR reviews.
+type ReviewResolver interface {
+	GetReviews(ctx context.Context, owner, name string, number int64) (Reviews, error)
+}
+
+// ErrReviewsUnsupported is returned by GetReviews for forges without reviews.
+var ErrReviewsUnsupported = errors.New("forge: reviews not supported")
+
+// GetReviews returns the PR's review verdict.
+func GetReviews(ctx context.Context, f Forge, owner, name string, number int64) (Reviews, error) {
+	rr, ok := f.(ReviewResolver)
+	if !ok {
+		return Reviews{}, ErrReviewsUnsupported
+	}
+	return rr.GetReviews(ctx, owner, name, number)
+}
