@@ -76,8 +76,13 @@ func StartPostgresServer(ctx context.Context) (*PostgresServer, error) {
 		}
 	}()
 
+	// Without a locale, Postgres 18 on macOS aborts with "postmaster became
+	// multithreaded during startup"; C is available everywhere.
+	pgEnv := append(os.Environ(), "LC_ALL=C", "LANG=C")
+
 	dbPath := filepath.Join(tempDir, "data")
 	initdb := exec.CommandContext(ctx, "initdb", "-D", dbPath, "-U", "postgres")
+	initdb.Env = pgEnv
 	initdb.Stdout = os.Stdout
 	initdb.Stderr = os.Stderr
 
@@ -91,6 +96,7 @@ func StartPostgresServer(ctx context.Context) (*PostgresServer, error) {
 		"-k", tempDir,
 		"-c", "listen_addresses=",
 	)
+	postgresProc.Env = pgEnv
 	postgresProc.Stdout = os.Stdout
 	postgresProc.Stderr = os.Stderr
 	postgresProc.SysProcAttr = &syscall.SysProcAttr{
