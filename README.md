@@ -307,6 +307,26 @@ volumes:
 Build it yourself with `nix build .#gitea-mq-docker` (produces an OCI archive;
 load with `regctl image import` or `skopeo copy oci-archive:result docker-daemon:gitea-mq:latest`).
 
+### Building without Nix
+
+A plain `Dockerfile` is included for hosts without Nix:
+
+```bash
+docker build --build-arg REVISION=$(git rev-parse HEAD) -t gitea-mq .
+```
+
+It builds a static binary in `golang:1.26-alpine` and copies it into
+`alpine:3.22` with the two runtime dependencies, `git` (merge branches are
+built by shelling out to git) and CA certificates, running as an
+unprivileged user with the cache in `/var/cache/gitea-mq`.
+
+Without any image builder, build the binary directly and run it on any base
+that has `git` and CA certificates:
+
+```bash
+CGO_ENABLED=0 go build -trimpath -o gitea-mq ./cmd/gitea-mq
+```
+
 ## NixOS module
 
 ```nix
