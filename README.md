@@ -99,6 +99,8 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_NOTIFY_URL` | no | - | POST every queue event, signed, to this URL (see [Event notifications](#event-notifications)) |
 | `GITEA_MQ_NOTIFY_SECRET` / `_FILE` | with notify URL | - | HMAC secret for `X-Gitea-MQ-Signature` |
 | `GITEA_MQ_NOTIFY_EVENTS` | no | all | Comma-separated event kinds to deliver |
+| `GITEA_MQ_FAILURE_DETAILS` | no | `false` | On ejection for a failed check, post the failing checks and (Gitea Actions) the job's log tail to the PR and the event (see [Failure details](#failure-details)) |
+| `GITEA_MQ_FAILURE_LOG_LINES` | no | `30` | Log lines per failing job; `0` = checks only, no logs |
 | `GITEA_MQ_EVENT_RETENTION` | no | `2160h` | How long queue events are kept in PostgreSQL (90 days) |
 
 ## Batching (bors-style)
@@ -239,6 +241,23 @@ Each request carries `X-Gitea-MQ-Event: <kind>` and
 best-effort: a few retries on errors, 5xx and 429, then the event is
 dropped; the events table stays the durable record, so a consumer can
 catch up with `/api/events?after=<last id>`.
+
+## Failure details
+
+With `GITEA_MQ_FAILURE_DETAILS=true`, a PR ejected for a failed check gets
+one comment listing every failing required check on the tested commit
+(context, state, description and link). For Gitea Actions jobs it also
+includes the job name and the last `GITEA_MQ_FAILURE_LOG_LINES` lines of the
+job log, fetched with `GET /repos/{owner}/{repo}/actions/jobs/{id}/logs`, in
+a collapsed block. The same data is stored in the `ejected` event's
+`detail.failures`, so `/api/events` and event notifications carry it.
+
+Output is bounded (three jobs, 400 characters per line, 32 KiB per comment)
+and redacted: gitea-mq's own token and secrets, `key=value` pairs whose key
+looks like a secret, `Authorization`/`Bearer` values, credentials in URLs and
+common token formats are replaced by `[REDACTED]`. The token needs read
+access to Actions. Logs of external CI systems are not fetched; their checks
+are still listed with their links.
 
 ## Repo selection
 

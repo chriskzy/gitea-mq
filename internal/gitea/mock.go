@@ -31,6 +31,9 @@ type MockClient struct {
 	CancelAutoMergeFn         func(ctx context.Context, owner, repo string, index int64) error
 	MergePRFn                 func(ctx context.Context, owner, repo string, index int64) error
 	MarkManuallyMergedFn      func(ctx context.Context, owner, repo string, index int64, sha string) error
+	ListRunJobsFn             func(ctx context.Context, owner, repo string, run int64) ([]ActionJob, error)
+	GetJobLogsFn              func(ctx context.Context, owner, repo string, jobID int64) ([]byte, error)
+	ListRunsFn                func(ctx context.Context, owner, repo string) ([]ActionRun, error)
 	RemoveIssueLabelFn        func(ctx context.Context, owner, repo string, index, labelID int64) error
 	ListRepoLabelsFn          func(ctx context.Context, owner, repo string) ([]Label, error)
 	CreateRepoLabelFn         func(ctx context.Context, owner, repo, name, color string, exclusive bool) (*Label, error)
@@ -404,4 +407,28 @@ func (m *MockClient) MarkManuallyMerged(ctx context.Context, owner, repo string,
 	}
 
 	return nil
+}
+
+func (m *MockClient) ListRunJobs(ctx context.Context, owner, repo string, run int64) ([]ActionJob, error) {
+	m.record("ListRunJobs", owner, repo, run)
+	if m.ListRunJobsFn != nil {
+		return m.ListRunJobsFn(ctx, owner, repo, run)
+	}
+	return nil, nil
+}
+
+func (m *MockClient) GetJobLogs(ctx context.Context, owner, repo string, jobID int64) ([]byte, error) {
+	m.record("GetJobLogs", owner, repo, jobID)
+	if m.GetJobLogsFn != nil {
+		return m.GetJobLogsFn(ctx, owner, repo, jobID)
+	}
+	return nil, nil
+}
+
+func (m *MockClient) ListRuns(ctx context.Context, owner, repo string) ([]ActionRun, error) {
+	m.record("ListRuns", owner, repo)
+	if m.ListRunsFn != nil {
+		return m.ListRunsFn(ctx, owner, repo)
+	}
+	return nil, nil
 }

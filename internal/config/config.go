@@ -41,6 +41,10 @@ type Config struct {
 	Metrics bool
 	// EventRetention is how long queue events are kept.
 	EventRetention time.Duration
+	// FailureDetails posts failing checks and job log tails on ejection.
+	FailureDetails bool
+	// FailureLogLines is how many trailing log lines to include per job.
+	FailureLogLines int
 	// NotifyURL receives every queue event as a signed POST; empty disables.
 	NotifyURL    string
 	NotifySecret string
@@ -83,6 +87,19 @@ type GithubConfig struct {
 	// GITEA_MQ_GITHUB_POLL_INTERVAL when GitHub's higher rate limit
 	// warrants a different cadence.
 	PollInterval time.Duration
+}
+
+// Secrets returns the configured secret values, so output that may echo them
+// (CI logs in failure details) can be redacted.
+func (c *Config) Secrets() []string {
+	out := []string{c.NotifySecret}
+	if c.Gitea != nil {
+		out = append(out, c.Gitea.Token, c.Gitea.WebhookSecret)
+	}
+	if c.Github != nil {
+		out = append(out, c.Github.WebhookSecret)
+	}
+	return out
 }
 
 func (c *Config) Repos() []forge.RepoRef {
@@ -256,6 +273,15 @@ func Load() (*Config, error) {
 		if k = strings.TrimSpace(k); k != "" {
 			cfg.NotifyEvents = append(cfg.NotifyEvents, k)
 		}
+	}
+
+	cfg.FailureDetails, err = parseBool("GITEA_MQ_FAILURE_DETAILS", false)
+	if err != nil {
+		return nil, err
+	}
+	cfg.FailureLogLines, err = parseInt("GITEA_MQ_FAILURE_LOG_LINES", 30, 0)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg.CacheDir = os.Getenv("GITEA_MQ_CACHE_DIR")

@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Mic92/gitea-mq/internal/failure"
+
 	"github.com/Mic92/gitea-mq/internal/config"
 	"github.com/Mic92/gitea-mq/internal/discovery"
 	"github.com/Mic92/gitea-mq/internal/forge"
@@ -159,6 +161,11 @@ func run() error {
 		SkipSetup:        !cfg.AutoSetup,
 		MergeLabel:       cfg.MergeLabel,
 		PriorityLabel:    cfg.PriorityLabel,
+		FailureDetails: failure.Options{
+			Enabled:  cfg.FailureDetails,
+			LogLines: cfg.FailureLogLines,
+			Secrets:  cfg.Secrets(),
+		},
 		Approval: forge.ApprovalPolicy{
 			Require:    cfg.RequireApproval,
 			Count:      cfg.RequiredApprovals,

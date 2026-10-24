@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Mic92/gitea-mq/internal/failure"
+
 	"github.com/Mic92/gitea-mq/internal/batch"
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/logutil"
@@ -41,6 +43,8 @@ type Deps struct {
 	// MergeChecks, when non-nil, replaces the required checks on merge
 	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
 	MergeChecks *[]string
+	// FailureDetails: see monitor.Deps.
+	FailureDetails failure.Options
 	// MergeLabel enqueues labeled PRs (stack-aware on GitHub); empty disables.
 	MergeLabel string
 	// PriorityLabel sorts queued PRs carrying it ahead of others; empty disables.
@@ -244,6 +248,7 @@ func monitorDeps(deps *Deps) *monitor.Deps {
 
 		ChecksFromConfig: deps.ChecksFromConfig,
 		MergeChecks:      deps.MergeChecks,
+		FailureDetails:   deps.FailureDetails,
 	}
 	if deps.Batch.Enabled() {
 		m.Batch = deps.Batch

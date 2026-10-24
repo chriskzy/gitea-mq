@@ -212,6 +212,19 @@ type Client interface {
 	// POST /repos/{owner}/{repo}/pulls/{index}/merge
 	MarkManuallyMerged(ctx context.Context, owner, repo string, index int64, sha string) error
 
+	// ListRunJobs lists the jobs of a Gitea Actions run.
+	// GET /repos/{owner}/{repo}/actions/runs/{run}/jobs
+	ListRunJobs(ctx context.Context, owner, repo string, run int64) ([]ActionJob, error)
+
+	// GetJobLogs returns a Gitea Actions job's plain-text log.
+	// GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs
+	GetJobLogs(ctx context.Context, owner, repo string, jobID int64) ([]byte, error)
+
+	// ListRuns lists recent Actions runs (newest first), to map a run number
+	// from a web URL to its ID.
+	// GET /repos/{owner}/{repo}/actions/runs
+	ListRuns(ctx context.Context, owner, repo string) ([]ActionRun, error)
+
 	// RemoveIssueLabel removes a label (by id) from an issue or PR.
 	// DELETE /repos/{owner}/{repo}/issues/{index}/labels/{id}
 	RemoveIssueLabel(ctx context.Context, owner, repo string, index, labelID int64) error
@@ -301,6 +314,22 @@ type Client interface {
 	// IsForgejo reports whether the server is a Forgejo instance.
 	// GET /api/forgejo/v1/version (200 on Forgejo, 404 on Gitea)
 	IsForgejo(ctx context.Context) (bool, error)
+}
+
+// ActionJob is the subset of a Gitea Actions job we need.
+type ActionJob struct {
+	ID         int64  `json:"id"`
+	RunID      int64  `json:"run_id"`
+	Name       string `json:"name"`
+	HTMLURL    string `json:"html_url"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+// ActionRun is the subset of a Gitea Actions run we need.
+type ActionRun struct {
+	ID        int64 `json:"id"`
+	RunNumber int64 `json:"run_number"`
 }
 
 // PRReview is the subset of a pull request review we need.

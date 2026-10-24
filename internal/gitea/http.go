@@ -793,3 +793,72 @@ func (c *HTTPClient) IsForgejo(ctx context.Context) (bool, error) {
 
 // Ensure HTTPClient implements Client at compile time.
 var _ Client = (*HTTPClient)(nil)
+
+// ListRunJobs lists the jobs of an Actions run.
+func (c *HTTPClient) ListRunJobs(ctx context.Context, owner, repo string, run int64) ([]ActionJob, error) {
+	return paginateWrapped(ctx, c,
+		fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?page=%%d&limit=50", owner, repo, run),
+		fmt.Sprintf("list jobs of run %d in %s/%s", run, owner, repo),
+		func(r *struct {
+			Jobs []ActionJob `json:"jobs"`
+		},
+		) []ActionJob {
+			return r.Jobs
+		})
+}
+
+// maxJobLog bounds how much of a job log is read; only the tail is used.
+const maxJobLog = 4 << 20
+
+// GetJobLogs returns an Actions job's log, at most the last maxJobLog bytes.
+func (c *HTTPClient) GetJobLogs(ctx context.Context, owner, repo string, jobID int64) ([]byte, error) {
+	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/actions/jobs/%d/logs", owner, repo, jobID), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	return readTail(resp.Body, maxJobLog)
+}
+
+// readTail returns the last n bytes of r.
+func readTail(r io.Reader, n int) ([]byte, error) {
+	buf := make([]byte, 0, 64<<10)
+	chunk := make([]byte, 64<<10)
+	for {
+		k, err := r.Read(chunk)
+		buf = append(buf, chunk[:k]...)
+		if len(buf) > 2*n {
+			buf = append(buf[:0], buf[len(buf)-n:]...)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(buf) > n {
+		buf = buf[len(buf)-n:]
+	}
+	return buf, nil
+}
+
+// ListRuns returns the first page of Actions runs, newest first. A failing
+// merge branch's run is recent, so one page is enough.
+func (c *HTTPClient) ListRuns(ctx context.Context, owner, repo string) ([]ActionRun, error) {
+	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/actions/runs?limit=50", owner, repo), nil)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Runs []ActionRun `json:"workflow_runs"`
+	}
+	if err := c.decodeJSON(resp, &out); err != nil {
+		return nil, fmt.Errorf("list runs in %s/%s: %w", owner, repo, err)
+	}
+	return out.Runs, nil
+}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/gobwas/glob"
 
+	"github.com/Mic92/gitea-mq/internal/failure"
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/merge"
 	"github.com/Mic92/gitea-mq/internal/queue"
@@ -27,6 +28,9 @@ type Deps struct {
 	FallbackChecks []string // from GITEA_MQ_REQUIRED_CHECKS
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
+	// FailureDetails controls collecting failing checks and job logs for
+	// ejection comments and events.
+	FailureDetails failure.Options
 	// MergeChecks, when non-nil, replaces the required checks on merge
 	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
 	MergeChecks *[]string
@@ -207,8 +211,19 @@ func HandleFailure(ctx context.Context, deps *Deps, entry *pg.QueueEntry, failed
 		checkRef = fmt.Sprintf("[%s](%s)", failedCheck, targetURL)
 	}
 
-	return removeFromQueue(ctx, deps, entry, "check_failed", map[string]any{"check": failedCheck, "target_url": targetURL},
-		pg.CheckStateFailure, desc, fmt.Sprintf("❌ Removed from merge queue: Check failed: %s", checkRef))
+	detail := map[string]any{"check": failedCheck, "target_url": targetURL}
+	headline := fmt.Sprintf("❌ Removed from merge queue: Check failed: %s", checkRef)
+	comment := headline
+	if deps.FailureDetails.Enabled {
+		required, _ := ResolveCheckList(ctx, deps.Forge, deps.Owner, deps.Repo, entry.TargetBranch, deps.MergeChecks, deps.FallbackChecks, deps.ChecksFromConfig)
+		checks := failure.Collect(ctx, deps.FailureDetails, deps.Forge, deps.Owner, deps.Repo, entry.MergeBranchSha.String, required)
+		comment = failure.Comment(headline, checks)
+		for k, v := range failure.Detail(checks) {
+			detail[k] = v
+		}
+	}
+
+	return removeFromQueue(ctx, deps, entry, "check_failed", detail, pg.CheckStateFailure, desc, comment)
 }
 
 func HandleTimeout(ctx context.Context, deps *Deps, entry *pg.QueueEntry) error {

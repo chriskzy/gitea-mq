@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mic92/gitea-mq/internal/failure"
 	"github.com/Mic92/gitea-mq/internal/gitea"
 	"github.com/Mic92/gitea-mq/internal/monitor"
 	"github.com/Mic92/gitea-mq/internal/queue"
@@ -281,5 +282,48 @@ func TestProcessCheckStatus_MergeChecksOverrideProtection(t *testing.T) {
 	}
 	if n := len(mock.CallsTo("GetBranchProtection")); n != 0 {
 		t.Fatalf("branch protection consulted for merge branch: %d calls", n)
+	}
+}
+
+// With failure details on, the ejection comment and event name the failing
+// check, its job and the log tail, without leaking secrets.
+func TestHandleFailure_FailureDetails(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupMonitorTest(t)
+	const secret = "super-secret-token-123"
+	deps.FailureDetails = failure.Options{Enabled: true, LogLines: 3, Secrets: []string{secret}}
+	withBranchProtection(mock, "gitea-mq", "ci / build (push)")
+	jobURL := "https://gitea.example.com/org/app/actions/runs/9/jobs/0"
+	mock.GetCombinedCommitStatusFn = func(context.Context, string, string, string) (*gitea.CombinedStatus, error) {
+		return &gitea.CombinedStatus{Statuses: []gitea.CommitStatusResult{
+			{Context: "ci / build (push)", Status: "failure", Description: "Failing after 2m", TargetURL: jobURL},
+		}}, nil
+	}
+	mock.ListRunJobsFn = func(context.Context, string, string, int64) ([]gitea.ActionJob, error) {
+		return []gitea.ActionJob{{ID: 1, Name: "build (push)", HTMLURL: jobURL}}, nil
+	}
+	mock.GetJobLogsFn = func(context.Context, string, string, int64) ([]byte, error) {
+		return []byte("setup\nusing token " + secret + "\n--- FAIL: TestX\nFAIL\n"), nil
+	}
+	entry := testutil.EnqueueTesting(t, svc, repoID, 42, "sha42", "mergesha")
+
+	if err := monitor.ProcessCheckStatus(ctx, deps, entry, "ci / build (push)", pg.CheckStateFailure, jobURL); err != nil {
+		t.Fatal(err)
+	}
+	comments := mock.CallsTo("CreateComment")
+	if len(comments) != 1 {
+		t.Fatalf("comments = %d", len(comments))
+	}
+	body := comments[0].Args[3].(string)
+	for _, want := range []string{"ci / build (push)", "build (push)", "--- FAIL: TestX", "Failing after 2m"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("comment missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, secret) {
+		t.Fatalf("comment leaks the token:\n%s", body)
+	}
+	evs, _ := svc.ListEvents(ctx, queue.EventFilter{RepoID: repoID, Kind: queue.EventEjected, Limit: 1})
+	if len(evs) != 1 || !strings.Contains(string(evs[0].Detail), `"job": "build (push)"`) || strings.Contains(string(evs[0].Detail), secret) {
+		t.Fatalf("event detail = %s", evs[0].Detail)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +45,7 @@ var (
 	_ forge.ReviewResolver     = (*giteaForge)(nil)
 	_ forge.ApprovalRequirer   = (*giteaForge)(nil)
 	_ forge.ManualMerger       = (*giteaForge)(nil)
+	_ forge.JobLogFetcher      = (*giteaForge)(nil)
 )
 
 // StackMerges builds the batch branch in one clone instead of one per member.
@@ -405,4 +408,66 @@ func (f *giteaForge) ListProtectedChecks(ctx context.Context, owner, name string
 
 func (f *giteaForge) MarkMerged(ctx context.Context, owner, name string, number int64, sha string) error {
 	return f.client.MarkManuallyMerged(ctx, owner, name, number, sha)
+}
+
+// actionsJobURL matches Gitea Actions job pages:
+// <base>/<owner>/<repo>/actions/runs/<run>/jobs/<job>.
+var actionsJobURL = regexp.MustCompile(`/actions/runs/(\d+)/jobs/(\d+)/?$`)
+
+// resolveJob maps a status target URL to an Actions job. Depending on the
+// Gitea version the run segment is the run ID or the per-repo run number,
+// and the job segment is the job's index in the run, so both are tried.
+func (f *giteaForge) resolveJob(ctx context.Context, owner, name, targetURL string) (*ActionJob, error) {
+	m := actionsJobURL.FindStringSubmatch(targetURL)
+	if m == nil || !strings.HasPrefix(targetURL, f.baseURL+"/"+owner+"/"+name+"/") {
+		return nil, forge.ErrNoJob
+	}
+	runSeg, _ := strconv.ParseInt(m[1], 10, 64)
+	jobIdx, _ := strconv.Atoi(m[2])
+
+	pick := func(jobs []ActionJob) *ActionJob {
+		for i := range jobs {
+			if strings.TrimRight(jobs[i].HTMLURL, "/") == strings.TrimRight(targetURL, "/") {
+				return &jobs[i]
+			}
+		}
+		if jobIdx >= 0 && jobIdx < len(jobs) {
+			return &jobs[jobIdx]
+		}
+		return nil
+	}
+
+	if jobs, err := f.client.ListRunJobs(ctx, owner, name, runSeg); err == nil {
+		if j := pick(jobs); j != nil {
+			return j, nil
+		}
+	} else if !IsNotFound(err) {
+		return nil, err
+	}
+	// The segment was a run number: find the run's ID.
+	runs, err := f.client.ListRuns(ctx, owner, name)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range runs {
+		if r.RunNumber == runSeg && r.ID != runSeg {
+			jobs, err := f.client.ListRunJobs(ctx, owner, name, r.ID)
+			if err != nil {
+				return nil, err
+			}
+			if j := pick(jobs); j != nil {
+				return j, nil
+			}
+		}
+	}
+	return nil, forge.ErrNoJob
+}
+
+func (f *giteaForge) JobLog(ctx context.Context, owner, name, targetURL string) (string, []byte, error) {
+	job, err := f.resolveJob(ctx, owner, name, targetURL)
+	if err != nil {
+		return "", nil, err
+	}
+	log, err := f.client.GetJobLogs(ctx, owner, name, job.ID)
+	return job.Name, log, err
 }
