@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 )
 
@@ -26,10 +27,17 @@ type ApprovalPolicy struct {
 	OnApproval bool
 	// FromConfig forbids reading branch protection (non-admin tokens).
 	FromConfig bool
+	// DistinctReviewers is a floor on approvals from distinct reviewer
+	// accounts (each account counts once, at its latest verdict).
+	DistinctReviewers int
 }
 
 // Needed is the number of approvals required for branch.
 func (p ApprovalPolicy) Needed(ctx context.Context, f Forge, owner, name, branch string) int {
+	return max(p.needed(ctx, f, owner, name, branch), p.DistinctReviewers)
+}
+
+func (p ApprovalPolicy) needed(ctx context.Context, f Forge, owner, name, branch string) int {
 	if p.Count > 0 {
 		return p.Count
 	}
@@ -45,16 +53,29 @@ func (p ApprovalPolicy) Needed(ctx context.Context, f Forge, owner, name, branch
 	return 1
 }
 
-// Check returns the PR's reviews and how many approvals it needs. ok is
-// true when approval is not required or the PR has it.
-func (p ApprovalPolicy) Check(ctx context.Context, f Forge, owner, name, branch string, number int64) (ok bool, rv Reviews, needed int, err error) {
+// Check returns the PR's reviews at head and how many approvals it needs. ok
+// is true when approval is not required or the PR has it.
+func (p ApprovalPolicy) Check(ctx context.Context, f Forge, owner, name, branch string, number int64, head string) (ok bool, rv Reviews, needed int, err error) {
 	if !p.Require {
 		return true, Reviews{}, 0, nil
 	}
 	needed = p.Needed(ctx, f, owner, name, branch)
-	rv, err = GetReviews(ctx, f, owner, name, number)
+	rv, err = GetReviews(ctx, f, owner, name, number, head)
 	if err != nil {
 		return false, rv, needed, err
 	}
 	return rv.Approved(needed), rv, needed, nil
+}
+
+// WaitingStatus is the MQ status description of a PR held back by the
+// approval gate.
+func WaitingStatus(rv Reviews, needed int) string {
+	switch {
+	case len(rv.Conflicts) > 0:
+		return ConflictStatus(rv.Conflicts)
+	case rv.ChangesRequested:
+		return "Changes requested: waiting for approval"
+	default:
+		return fmt.Sprintf("Waiting for approval (%d/%d)", rv.Approvals, needed)
+	}
 }

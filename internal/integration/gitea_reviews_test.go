@@ -48,7 +48,7 @@ func TestGiteaReviews(t *testing.T) {
 	f := gitea.NewForge(gitea.NewHTTPClient(giteaServer.URL, api.Token), giteaServer.URL)
 	reviews := func() forge.Reviews {
 		t.Helper()
-		rv, err := forge.GetReviews(ctx, f, "testuser", repoName, pr.Number)
+		rv, err := forge.GetReviews(ctx, f, "testuser", repoName, pr.Number, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -74,6 +74,46 @@ func TestGiteaReviews(t *testing.T) {
 	}
 	if rv := reviews(); !rv.Approved(1) {
 		t.Fatalf("collaborator approval not counted: %+v", rv)
+	}
+
+	// Approve-then-reject by one account at the head is a conflict naming
+	// both reviews; Gitea reports the head each review was submitted on.
+	var head struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := json.Unmarshal(api.MustDo(t, "GET", "/repos/testuser/"+repoName+"/pulls/"+itoa(pr.Number), ""), &head); err != nil {
+		t.Fatal(err)
+	}
+	review := func(event string) {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+			giteaServer.URL+"/api/v1/repos/testuser/"+repoName+"/pulls/"+itoa(pr.Number)+"/reviews",
+			strings.NewReader(`{"event": "`+event+`", "body": "review"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetBasicAuth("reviewer", "reviewerpass123")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d %s", event, resp.StatusCode, body)
+		}
+	}
+	review("REQUEST_CHANGES")
+	rv, err := forge.GetReviews(ctx, f, "testuser", repoName, pr.Number, head.Head.SHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rv.ChangesRequested || len(rv.Conflicts) != 2 || !rv.Conflicts[0].Approved || rv.Conflicts[1].Approved {
+		t.Fatalf("approve-then-reject at head not reported as a conflict: %+v", rv)
+	}
+	review("APPROVED")
+	if rv, _ := forge.GetReviews(ctx, f, "testuser", repoName, pr.Number, head.Head.SHA); !rv.Approved(1) || len(rv.Conflicts) != 0 {
+		t.Fatalf("new approval at head did not clear the conflict: %+v", rv)
 	}
 
 	// A push makes the approval stale; Gitea marks it asynchronously.

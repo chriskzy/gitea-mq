@@ -233,6 +233,12 @@ in
       description = "Approvals needed when requireApproval is set. 0 reads it from branch protection when readable, else 1.";
     };
 
+    requiredDistinctReviewers = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+      description = "Minimum approvals from distinct reviewer accounts when requireApproval is set. 0 = no floor.";
+    };
+
     enqueueOnApproval = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -405,6 +411,7 @@ in
         GITEA_MQ_AUTO_SETUP = lib.boolToString cfg.autoSetup;
         GITEA_MQ_REQUIRE_APPROVAL = lib.boolToString cfg.requireApproval;
         GITEA_MQ_REQUIRED_APPROVALS = toString cfg.requiredApprovals;
+        GITEA_MQ_REQUIRED_DISTINCT_REVIEWERS = toString cfg.requiredDistinctReviewers;
         GITEA_MQ_ENQUEUE_ON_APPROVAL = lib.boolToString cfg.enqueueOnApproval;
         GITEA_MQ_REFRESH_INTERVAL = cfg.refreshInterval;
         GITEA_MQ_DISCOVERY_INTERVAL = cfg.discoveryInterval;

@@ -339,7 +339,7 @@ func TestForge_DraftAndReviews(t *testing.T) {
 		t.Error("draft PR not reported as draft")
 	}
 
-	rv, err := forge.GetReviews(ctx, f, "org", "app", 1)
+	rv, err := forge.GetReviews(ctx, f, "org", "app", 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}

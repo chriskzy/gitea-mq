@@ -343,6 +343,8 @@ type PRReview struct {
 	Dismissed bool `json:"dismissed"`
 	// Stale is set when new commits were pushed after the review.
 	Stale bool `json:"stale"`
+	// CommitID is the head the review was submitted on.
+	CommitID string `json:"commit_id"`
 }
 
 // Issue is the subset of an issue or PR returned by the dependencies endpoint.

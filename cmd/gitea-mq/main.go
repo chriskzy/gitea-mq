@@ -167,9 +167,11 @@ func run() error {
 			Secrets:  cfg.Secrets(),
 		},
 		Approval: forge.ApprovalPolicy{
-			Require:    cfg.RequireApproval,
-			Count:      cfg.RequiredApprovals,
-			OnApproval: cfg.EnqueueOnApproval,
+			Require: cfg.RequireApproval,
+			Count:   cfg.RequiredApprovals,
+			// Distinct accounts, at their latest verdict on the head.
+			DistinctReviewers: cfg.RequiredDistinctReviewers,
+			OnApproval:        cfg.EnqueueOnApproval,
 		},
 		LabelPrefix:         cfg.LabelPrefix,
 		SuccessTimeout:      5 * time.Minute,

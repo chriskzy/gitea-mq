@@ -793,15 +793,15 @@ func (e *Engine) holdUnapproved(ctx context.Context, b *pg.Batch, entries []pg.Q
 	if !e.Approval.Require {
 		return false, nil
 	}
-	unapproved := map[int64]bool{}
+	unapproved := map[int64]string{} // entry ID -> status description
 	for i := range entries {
-		ok, _, _, err := e.Approval.Check(ctx, e.Forge, e.Owner, e.Repo, b.TargetBranch, entries[i].PrNumber)
+		ok, rv, needed, err := e.Approval.Check(ctx, e.Forge, e.Owner, e.Repo, b.TargetBranch, entries[i].PrNumber, entries[i].PrHeadSha)
 		if err != nil {
 			slog.Warn("pre-land approval check failed, landing anyway", "pr", entries[i].PrNumber, "error", err)
 			continue
 		}
 		if !ok {
-			unapproved[entries[i].ID] = true
+			unapproved[entries[i].ID] = forge.WaitingStatus(rv, needed)
 		}
 	}
 	if len(unapproved) == 0 {
@@ -809,11 +809,12 @@ func (e *Engine) holdUnapproved(ctx context.Context, b *pg.Batch, entries []pg.Q
 	}
 	for i := range entries {
 		ent := &entries[i]
-		if !unapproved[ent.ID] {
+		desc, held := unapproved[ent.ID]
+		if !held {
 			continue
 		}
 		logutil.WarnIfErr(e.Forge.SetMQStatus(ctx, e.Owner, e.Repo, ent.PrHeadSha, forge.MQStatus{
-			State: pg.CheckStatePending, Description: "Waiting for approval", TargetURL: e.prURL(ent.PrNumber),
+			State: pg.CheckStatePending, Description: desc, TargetURL: e.prURL(ent.PrNumber),
 		}), "set mq status failed", "pr", ent.PrNumber)
 		merge.SkipPendingMirroredChecks(ctx, e.Forge, e.Owner, e.Repo, ent.PrHeadSha)
 		logutil.WarnIfErr(e.Forge.Comment(ctx, e.Owner, e.Repo, ent.PrNumber, UnapprovedComment),
@@ -821,7 +822,7 @@ func (e *Engine) holdUnapproved(ctx context.Context, b *pg.Batch, entries []pg.Q
 		// The next SaveBatch deletes EjectedIds from the queue.
 		b.EjectedIds = append(b.EjectedIds, ent.ID)
 	}
-	b.CurrentIds = slices.DeleteFunc(b.CurrentIds, func(id int64) bool { return unapproved[id] })
+	b.CurrentIds = slices.DeleteFunc(b.CurrentIds, func(id int64) bool { _, held := unapproved[id]; return held })
 	slog.Info("batch members held back: approval withdrawn", "batch", b.ID, "held", len(unapproved), "current", len(b.CurrentIds))
 	return true, nil
 }
