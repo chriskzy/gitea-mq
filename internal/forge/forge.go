@@ -411,3 +411,14 @@ func GetReviews(ctx context.Context, f Forge, owner, name string, number int64) 
 	}
 	return rr.GetReviews(ctx, owner, name, number)
 }
+
+// ErrNoJob is returned by JobLogFetcher when a check's target URL does not
+// point at a job the forge can fetch logs for (e.g. an external CI).
+var ErrNoJob = errors.New("forge: target URL is not a known CI job")
+
+// JobLogFetcher is optionally implemented by forges with a built-in CI
+// (Gitea Actions) whose job logs can be fetched from a status target URL.
+type JobLogFetcher interface {
+	// JobLog returns the job's name and (the tail of) its log.
+	JobLog(ctx context.Context, owner, name, targetURL string) (job string, log []byte, err error)
+}

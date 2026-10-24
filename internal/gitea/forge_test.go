@@ -3,6 +3,7 @@ package gitea_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -308,5 +309,48 @@ func TestGetReviews_LatestOfficialPerUser(t *testing.T) {
 	}
 	if !rv.Approved(1) || rv.Approved(2) {
 		t.Fatalf("Approved(): %+v", rv)
+	}
+}
+
+func TestJobLog_ResolvesRunIDAndRunNumber(t *testing.T) {
+	const base = "https://gitea.example.com"
+	jobs := []gitea.ActionJob{
+		{ID: 501, Name: "lint", HTMLURL: base + "/o/r/actions/runs/77/jobs/0"},
+		{ID: 502, Name: "build", HTMLURL: base + "/o/r/actions/runs/77/jobs/1"},
+	}
+	for _, tc := range []struct {
+		name string
+		url  string
+		runs map[int64][]gitea.ActionJob // run ID -> jobs
+		list []gitea.ActionRun
+	}{
+		{"run id in URL", base + "/o/r/actions/runs/77/jobs/1", map[int64][]gitea.ActionJob{77: jobs}, nil},
+		{"run number in URL", base + "/o/r/actions/runs/12/jobs/1", map[int64][]gitea.ActionJob{77: jobs}, []gitea.ActionRun{{ID: 77, RunNumber: 12}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &gitea.MockClient{}
+			mock.ListRunJobsFn = func(_ context.Context, _, _ string, run int64) ([]gitea.ActionJob, error) {
+				if j, ok := tc.runs[run]; ok {
+					return j, nil
+				}
+				return nil, &gitea.APIError{StatusCode: 404}
+			}
+			mock.ListRunsFn = func(context.Context, string, string) ([]gitea.ActionRun, error) { return tc.list, nil }
+			mock.GetJobLogsFn = func(_ context.Context, _, _ string, id int64) ([]byte, error) {
+				return []byte(fmt.Sprintf("log of %d", id)), nil
+			}
+			f := gitea.NewForge(mock, base).(forge.JobLogFetcher)
+			job, log, err := f.JobLog(context.Background(), "o", "r", tc.url)
+			if err != nil || job != "build" || string(log) != "log of 502" {
+				t.Fatalf("JobLog = %q %q %v", job, log, err)
+			}
+		})
+	}
+
+	f := gitea.NewForge(&gitea.MockClient{}, base).(forge.JobLogFetcher)
+	for _, url := range []string{"https://ci.example.com/build/1", base + "/other/repo/actions/runs/1/jobs/0"} {
+		if _, _, err := f.JobLog(context.Background(), "o", "r", url); !errors.Is(err, forge.ErrNoJob) {
+			t.Errorf("%s: err = %v, want ErrNoJob", url, err)
+		}
 	}
 }

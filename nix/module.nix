@@ -282,6 +282,18 @@ in
       };
     };
 
+    failureDetails = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Post failing checks and Gitea Actions log tails to the PR and the event on ejection.";
+    };
+
+    failureLogLines = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 30;
+      description = "Log lines per failing job in failure details; 0 lists checks only.";
+    };
+
     logLevel = lib.mkOption {
       type = lib.types.enum [
         "debug"
@@ -397,6 +409,8 @@ in
         GITEA_MQ_REFRESH_INTERVAL = cfg.refreshInterval;
         GITEA_MQ_DISCOVERY_INTERVAL = cfg.discoveryInterval;
         GITEA_MQ_LOG_LEVEL = cfg.logLevel;
+        GITEA_MQ_FAILURE_DETAILS = lib.boolToString cfg.failureDetails;
+        GITEA_MQ_FAILURE_LOG_LINES = toString cfg.failureLogLines;
         GITEA_MQ_METRICS = lib.boolToString cfg.metrics;
         GITEA_MQ_EVENT_RETENTION = cfg.eventRetention;
       }

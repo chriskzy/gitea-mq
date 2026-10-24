@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Mic92/gitea-mq/internal/failure"
+
 	"github.com/Mic92/gitea-mq/internal/batch"
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/merge"
@@ -52,6 +54,8 @@ type Deps struct {
 	// SkipSetup disables EnsureRepoSetup (branch protection and webhook
 	// edits), for tokens without repo admin rights.
 	SkipSetup bool
+	// FailureDetails: see monitor.Deps.
+	FailureDetails failure.Options
 	// Approval: see poller.Deps. Its FromConfig is filled from
 	// ChecksFromConfig.
 	Approval forge.ApprovalPolicy
@@ -139,6 +143,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 			MergeLabel:     r.deps.MergeLabel,
 			SkipIfUpToDate: r.deps.SkipQueueIfUpToDate,
 			Approval:       r.approvalPolicy(),
+			FailureDetails: r.deps.FailureDetails,
 			Advance:        triggerPoll,
 
 			ChecksFromConfig: r.deps.ChecksFromConfig,
@@ -172,6 +177,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 
 		ChecksFromConfig: r.deps.ChecksFromConfig,
 		MergeChecks:      r.deps.MergeChecks,
+		FailureDetails:   r.deps.FailureDetails,
 	}
 	if batchEngine != nil {
 		monDeps.Batch = batchEngine
@@ -202,6 +208,7 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		MergeLabel:          r.deps.MergeLabel,
 		PriorityLabel:       r.deps.PriorityLabel,
 		Approval:            r.approvalPolicy(),
+		FailureDetails:      r.deps.FailureDetails,
 		LabelPrefix:         r.deps.LabelPrefix,
 		SuccessTimeout:      r.deps.SuccessTimeout,
 		CheckTimeout:        r.deps.CheckTimeout,

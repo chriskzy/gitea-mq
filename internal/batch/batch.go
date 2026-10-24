@@ -14,9 +14,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Mic92/gitea-mq/internal/failure"
+
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/logutil"
 	"github.com/Mic92/gitea-mq/internal/merge"
+	"github.com/Mic92/gitea-mq/internal/monitor"
 	"github.com/Mic92/gitea-mq/internal/queue"
 	"github.com/Mic92/gitea-mq/internal/store/pg"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -55,6 +58,9 @@ type Engine struct {
 	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
 	MergeChecks *[]string
 	MergeLabel  string
+	// FailureDetails controls collecting failing checks and job logs for
+	// ejection comments and events.
+	FailureDetails failure.Options
 	// Approval is re-checked right before landing: an approval dismissed
 	// while the batch tested must not be fast-forwarded past.
 	Approval forge.ApprovalPolicy
@@ -392,9 +398,15 @@ func (e *Engine) HandleFail(ctx context.Context, b *pg.Batch, failedCheck, targe
 			if targetURL != "" {
 				ref = fmt.Sprintf("[%s](%s)", failedCheck, targetURL)
 			}
-			e.eject(ctx, b, &entries[0], "check_failed", pg.CheckStateFailure,
-				"Check failed: "+failedCheck,
-				"❌ Removed from merge queue: Check failed: "+ref)
+			headline := "❌ Removed from merge queue: Check failed: " + ref
+			comment, extra := headline, map[string]any(nil)
+			if e.FailureDetails.Enabled {
+				required, _ := monitor.ResolveCheckList(ctx, e.Forge, e.Owner, e.Repo, b.TargetBranch, e.MergeChecks, e.FallbackChecks, e.ChecksFromConfig)
+				checks := failure.Collect(ctx, e.FailureDetails, e.Forge, e.Owner, e.Repo, b.BranchSha.String, required)
+				comment, extra = failure.Comment(headline, checks), failure.Detail(checks)
+			}
+			e.ejectWith(ctx, b, &entries[0], "check_failed", pg.CheckStateFailure,
+				"Check failed: "+failedCheck, comment, extra)
 		}
 		b.CurrentIds = nil
 		return e.next(ctx, b)
@@ -623,6 +635,11 @@ func (e *Engine) next(ctx context.Context, b *pg.Batch) error {
 
 // eject marks a single member for removal: status, cancel automerge, comment.
 func (e *Engine) eject(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, reason string, state pg.CheckState, statusDesc, comment string) {
+	e.ejectWith(ctx, b, ent, reason, state, statusDesc, comment, nil)
+}
+
+// ejectWith is eject with extra event detail (e.g. failure details).
+func (e *Engine) ejectWith(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, reason string, state pg.CheckState, statusDesc, comment string, extra map[string]any) {
 	logutil.WarnIfErr(e.Forge.SetMQStatus(ctx, e.Owner, e.Repo, ent.PrHeadSha, forge.MQStatus{
 		State: state, Description: statusDesc, TargetURL: e.prURL(ent.PrNumber),
 	}), "set mq status failed", "pr", ent.PrNumber)
@@ -634,7 +651,7 @@ func (e *Engine) eject(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, rea
 	e.Queue.RecordEvent(ctx, queue.Event{
 		RepoID: e.RepoID, Kind: queue.EventEjected, PRNumber: ent.PrNumber, BatchID: b.ID,
 		TargetBranch: b.TargetBranch, HeadSHA: ent.PrHeadSha, Reason: reason,
-		Detail:     map[string]any{"status": statusDesc},
+		Detail:     withStatus(extra, statusDesc),
 		EnqueuedAt: ent.EnqueuedAt.Time,
 	})
 }
@@ -807,4 +824,12 @@ func (e *Engine) holdUnapproved(ctx context.Context, b *pg.Batch, entries []pg.Q
 	b.CurrentIds = slices.DeleteFunc(b.CurrentIds, func(id int64) bool { return unapproved[id] })
 	slog.Info("batch members held back: approval withdrawn", "batch", b.ID, "held", len(unapproved), "current", len(b.CurrentIds))
 	return true, nil
+}
+
+func withStatus(extra map[string]any, status string) map[string]any {
+	d := map[string]any{"status": status}
+	for k, v := range extra {
+		d[k] = v
+	}
+	return d
 }
