@@ -66,7 +66,7 @@ func (q *Queries) CountQueuePosition(ctx context.Context, arg CountQueuePosition
 const createBatch = `-- name: CreateBatch :one
 INSERT INTO batches (repo_id, target_branch, member_ids, current_ids)
 VALUES ($1, $2, $3, $3)
-RETURNING id, repo_id, target_branch, state, member_ids, current_ids, pending, landed_ids, ejected_ids, branch_name, branch_sha, builds, ff_retries, flaky, created_at, testing_started_at
+RETURNING id, repo_id, target_branch, state, member_ids, current_ids, pending, landed_ids, ejected_ids, branch_name, branch_sha, builds, ff_retries, flaky, created_at, testing_started_at, infra_retries
 `
 
 type CreateBatchParams struct {
@@ -95,6 +95,7 @@ func (q *Queries) CreateBatch(ctx context.Context, arg CreateBatchParams) (Batch
 		&i.Flaky,
 		&i.CreatedAt,
 		&i.TestingStartedAt,
+		&i.InfraRetries,
 	)
 	return i, err
 }
@@ -140,7 +141,7 @@ const enqueuePR = `-- name: EnqueuePR :one
 INSERT INTO queue_entries (repo_id, pr_number, pr_head_sha, target_branch, priority)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (repo_id, pr_number) DO NOTHING
-RETURNING id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority
+RETURNING id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority, infra_retries
 `
 
 type EnqueuePRParams struct {
@@ -175,12 +176,13 @@ func (q *Queries) EnqueuePR(ctx context.Context, arg EnqueuePRParams) (QueueEntr
 		&i.ErrorMessage,
 		&i.ActiveBatchID,
 		&i.Priority,
+		&i.InfraRetries,
 	)
 	return i, err
 }
 
 const getBatch = `-- name: GetBatch :one
-SELECT id, repo_id, target_branch, state, member_ids, current_ids, pending, landed_ids, ejected_ids, branch_name, branch_sha, builds, ff_retries, flaky, created_at, testing_started_at FROM batches WHERE id = $1
+SELECT id, repo_id, target_branch, state, member_ids, current_ids, pending, landed_ids, ejected_ids, branch_name, branch_sha, builds, ff_retries, flaky, created_at, testing_started_at, infra_retries FROM batches WHERE id = $1
 `
 
 func (q *Queries) GetBatch(ctx context.Context, id int64) (Batch, error) {
@@ -203,6 +205,7 @@ func (q *Queries) GetBatch(ctx context.Context, id int64) (Batch, error) {
 		&i.Flaky,
 		&i.CreatedAt,
 		&i.TestingStartedAt,
+		&i.InfraRetries,
 	)
 	return i, err
 }
@@ -240,7 +243,7 @@ func (q *Queries) GetCheckStatuses(ctx context.Context, queueEntryID int64) ([]C
 }
 
 const getEntriesByIDs = `-- name: GetEntriesByIDs :many
-SELECT id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority FROM queue_entries
+SELECT id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority, infra_retries FROM queue_entries
 WHERE id = ANY($1::bigint[])
 `
 
@@ -268,6 +271,7 @@ func (q *Queries) GetEntriesByIDs(ctx context.Context, ids []int64) ([]QueueEntr
 			&i.ErrorMessage,
 			&i.ActiveBatchID,
 			&i.Priority,
+			&i.InfraRetries,
 		); err != nil {
 			return nil, err
 		}
@@ -280,7 +284,7 @@ func (q *Queries) GetEntriesByIDs(ctx context.Context, ids []int64) ([]QueueEntr
 }
 
 const getHeadOfQueue = `-- name: GetHeadOfQueue :one
-SELECT id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority FROM queue_entries
+SELECT id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority, infra_retries FROM queue_entries
 WHERE repo_id = $1 AND target_branch = $2
 ORDER BY state = 'queued', priority DESC, enqueued_at, id
 LIMIT 1
@@ -309,12 +313,13 @@ func (q *Queries) GetHeadOfQueue(ctx context.Context, arg GetHeadOfQueueParams) 
 		&i.ErrorMessage,
 		&i.ActiveBatchID,
 		&i.Priority,
+		&i.InfraRetries,
 	)
 	return i, err
 }
 
 const getLiveBatch = `-- name: GetLiveBatch :one
-SELECT id, repo_id, target_branch, state, member_ids, current_ids, pending, landed_ids, ejected_ids, branch_name, branch_sha, builds, ff_retries, flaky, created_at, testing_started_at FROM batches
+SELECT id, repo_id, target_branch, state, member_ids, current_ids, pending, landed_ids, ejected_ids, branch_name, branch_sha, builds, ff_retries, flaky, created_at, testing_started_at, infra_retries FROM batches
 WHERE repo_id = $1 AND target_branch = $2 AND state IN ('forming', 'testing')
 `
 
@@ -343,6 +348,7 @@ func (q *Queries) GetLiveBatch(ctx context.Context, arg GetLiveBatchParams) (Bat
 		&i.Flaky,
 		&i.CreatedAt,
 		&i.TestingStartedAt,
+		&i.InfraRetries,
 	)
 	return i, err
 }
@@ -374,7 +380,7 @@ func (q *Queries) GetOrCreateRepo(ctx context.Context, arg GetOrCreateRepoParams
 }
 
 const getQueueEntry = `-- name: GetQueueEntry :one
-SELECT id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority FROM queue_entries
+SELECT id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority, infra_retries FROM queue_entries
 WHERE repo_id = $1 AND pr_number = $2
 `
 
@@ -401,6 +407,7 @@ func (q *Queries) GetQueueEntry(ctx context.Context, arg GetQueueEntryParams) (Q
 		&i.ErrorMessage,
 		&i.ActiveBatchID,
 		&i.Priority,
+		&i.InfraRetries,
 	)
 	return i, err
 }
@@ -429,6 +436,19 @@ func (q *Queries) HasEvent(ctx context.Context, arg HasEventParams) (bool, error
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const incrementEntryInfraRetries = `-- name: IncrementEntryInfraRetries :one
+UPDATE queue_entries SET infra_retries = infra_retries + 1
+WHERE id = $1
+RETURNING infra_retries
+`
+
+func (q *Queries) IncrementEntryInfraRetries(ctx context.Context, id int64) (int32, error) {
+	row := q.db.QueryRow(ctx, incrementEntryInfraRetries, id)
+	var infra_retries int32
+	err := row.Scan(&infra_retries)
+	return infra_retries, err
 }
 
 const insertEvent = `-- name: InsertEvent :one
@@ -471,7 +491,7 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Inser
 
 const listActiveEntriesByRepo = `-- name: ListActiveEntriesByRepo :many
 
-SELECT id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority FROM queue_entries
+SELECT id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority, infra_retries FROM queue_entries
 WHERE repo_id = $1
 ORDER BY target_branch, state = 'queued', priority DESC, enqueued_at, id
 `
@@ -502,6 +522,7 @@ func (q *Queries) ListActiveEntriesByRepo(ctx context.Context, repoID int64) ([]
 			&i.ErrorMessage,
 			&i.ActiveBatchID,
 			&i.Priority,
+			&i.InfraRetries,
 		); err != nil {
 			return nil, err
 		}
@@ -589,7 +610,7 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]ListE
 }
 
 const listLiveBatchesByRepo = `-- name: ListLiveBatchesByRepo :many
-SELECT id, repo_id, target_branch, state, member_ids, current_ids, pending, landed_ids, ejected_ids, branch_name, branch_sha, builds, ff_retries, flaky, created_at, testing_started_at FROM batches
+SELECT id, repo_id, target_branch, state, member_ids, current_ids, pending, landed_ids, ejected_ids, branch_name, branch_sha, builds, ff_retries, flaky, created_at, testing_started_at, infra_retries FROM batches
 WHERE repo_id = $1 AND state IN ('forming', 'testing')
 `
 
@@ -619,6 +640,7 @@ func (q *Queries) ListLiveBatchesByRepo(ctx context.Context, repoID int64) ([]Ba
 			&i.Flaky,
 			&i.CreatedAt,
 			&i.TestingStartedAt,
+			&i.InfraRetries,
 		); err != nil {
 			return nil, err
 		}
@@ -654,9 +676,10 @@ UPDATE batches SET
     builds = $9,
     ff_retries = $10,
     flaky = $11,
-    testing_started_at = $12
+    testing_started_at = $12,
+    infra_retries = $13
 WHERE id = $1 AND state IN ('forming', 'testing')
-RETURNING id, repo_id, target_branch, state, member_ids, current_ids, pending, landed_ids, ejected_ids, branch_name, branch_sha, builds, ff_retries, flaky, created_at, testing_started_at
+RETURNING id, repo_id, target_branch, state, member_ids, current_ids, pending, landed_ids, ejected_ids, branch_name, branch_sha, builds, ff_retries, flaky, created_at, testing_started_at, infra_retries
 `
 
 type SaveBatchParams struct {
@@ -672,6 +695,7 @@ type SaveBatchParams struct {
 	FfRetries        int32              `json:"ff_retries"`
 	Flaky            bool               `json:"flaky"`
 	TestingStartedAt pgtype.Timestamptz `json:"testing_started_at"`
+	InfraRetries     int32              `json:"infra_retries"`
 }
 
 func (q *Queries) SaveBatch(ctx context.Context, arg SaveBatchParams) (Batch, error) {
@@ -688,6 +712,7 @@ func (q *Queries) SaveBatch(ctx context.Context, arg SaveBatchParams) (Batch, er
 		arg.FfRetries,
 		arg.Flaky,
 		arg.TestingStartedAt,
+		arg.InfraRetries,
 	)
 	var i Batch
 	err := row.Scan(
@@ -707,6 +732,7 @@ func (q *Queries) SaveBatch(ctx context.Context, arg SaveBatchParams) (Batch, er
 		&i.Flaky,
 		&i.CreatedAt,
 		&i.TestingStartedAt,
+		&i.InfraRetries,
 	)
 	return i, err
 }
@@ -821,7 +847,7 @@ func (q *Queries) SummarizeEvents(ctx context.Context, arg SummarizeEventsParams
 }
 
 const takeQueuedHead = `-- name: TakeQueuedHead :many
-SELECT q.id, q.repo_id, q.pr_number, q.pr_head_sha, q.target_branch, q.state, q.enqueued_at, q.testing_started_at, q.completed_at, q.merge_branch_name, q.merge_branch_sha, q.error_message, q.active_batch_id, q.priority FROM queue_entries q
+SELECT q.id, q.repo_id, q.pr_number, q.pr_head_sha, q.target_branch, q.state, q.enqueued_at, q.testing_started_at, q.completed_at, q.merge_branch_name, q.merge_branch_sha, q.error_message, q.active_batch_id, q.priority, q.infra_retries FROM queue_entries q
 WHERE q.repo_id = $1 AND q.target_branch = $2 AND q.state = 'queued'
   -- Priority batches exclude normal PRs so one cannot delay the other via bisection.
   AND (q.priority OR NOT EXISTS (
@@ -862,6 +888,7 @@ func (q *Queries) TakeQueuedHead(ctx context.Context, arg TakeQueuedHeadParams) 
 			&i.ErrorMessage,
 			&i.ActiveBatchID,
 			&i.Priority,
+			&i.InfraRetries,
 		); err != nil {
 			return nil, err
 		}

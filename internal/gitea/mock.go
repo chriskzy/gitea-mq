@@ -34,6 +34,7 @@ type MockClient struct {
 	ListRunJobsFn             func(ctx context.Context, owner, repo string, run int64) ([]ActionJob, error)
 	GetJobLogsFn              func(ctx context.Context, owner, repo string, jobID int64) ([]byte, error)
 	ListRunsFn                func(ctx context.Context, owner, repo string) ([]ActionRun, error)
+	RerunJobFn                func(ctx context.Context, owner, repo string, runID, jobID int64) error
 	RemoveIssueLabelFn        func(ctx context.Context, owner, repo string, index, labelID int64) error
 	ListRepoLabelsFn          func(ctx context.Context, owner, repo string) ([]Label, error)
 	CreateRepoLabelFn         func(ctx context.Context, owner, repo, name, color string, exclusive bool) (*Label, error)
@@ -431,4 +432,12 @@ func (m *MockClient) ListRuns(ctx context.Context, owner, repo string) ([]Action
 		return m.ListRunsFn(ctx, owner, repo)
 	}
 	return nil, nil
+}
+
+func (m *MockClient) RerunJob(ctx context.Context, owner, repo string, runID, jobID int64) error {
+	m.record("RerunJob", owner, repo, runID, jobID)
+	if m.RerunJobFn != nil {
+		return m.RerunJobFn(ctx, owner, repo, runID, jobID)
+	}
+	return nil
 }

@@ -270,6 +270,33 @@ common token formats are replaced by `[REDACTED]`. The token needs read
 access to Actions. Logs of external CI systems are not fetched; their checks
 are still listed with their links.
 
+## Retrying infrastructure failures
+
+Some failures are not the PR's fault: a runner losing its container socket,
+a download timing out, a simulator failing to start. List them as regexes,
+one per line (`#` starts a comment), in `GITEA_MQ_INFRA_RETRY_PATTERNS` or a
+file named by `GITEA_MQ_INFRA_RETRY_PATTERNS_FILE`:
+
+```text
+did not return a process handle
+engine\.sock: no such file
+curl: \(\d+\)
+```
+
+When a required check fails, the patterns are matched against each failing
+check's description and its Gitea Actions log tail. On a match gitea-mq
+reruns the failed jobs on the same commit with
+`POST /repos/{owner}/{repo}/actions/runs/{run}/jobs/{job}/rerun`, keeps the
+PR (or batch) in the queue and records an `infra_retry` event with the
+pattern, the rerun checks and the attempt number. A failure that matches
+nothing ejects or bisects as before.
+
+`GITEA_MQ_INFRA_RETRY_MAX` (default 1) caps reruns per queue entry, or per
+batch build. A failure after the last retry ejects normally. A batch that
+needed a retry is marked flaky even when it then lands. The token needs write
+access to Actions; checks from external CI cannot be rerun and are never
+retried.
+
 ## Repo selection
 
 There are three ways to tell gitea-mq which repos to manage.

@@ -8,13 +8,13 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/gobwas/glob"
-
 	"github.com/Mic92/gitea-mq/internal/failure"
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/merge"
 	"github.com/Mic92/gitea-mq/internal/queue"
+	"github.com/Mic92/gitea-mq/internal/retry"
 	"github.com/Mic92/gitea-mq/internal/store/pg"
+	"github.com/gobwas/glob"
 )
 
 type Deps struct {
@@ -31,6 +31,8 @@ type Deps struct {
 	// FailureDetails controls collecting failing checks and job logs for
 	// ejection comments and events.
 	FailureDetails failure.Options
+	// Retry reruns infrastructure failures instead of ejecting.
+	Retry retry.Policy
 	// MergeChecks, when non-nil, replaces the required checks on merge
 	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
 	MergeChecks *[]string
@@ -283,6 +285,11 @@ func ProcessCheckStatus(ctx context.Context, deps *Deps, entry *pg.QueueEntry, c
 		return deps.Batch.HandleCheck(ctx, entry, checkContext, checkState, targetURL)
 	}
 
+	// The forge still shows the old failure until a rerun reports.
+	if deps.Retry.Tracker.Suppress(entry.MergeBranchSha.String, checkContext, failed(checkState)) {
+		return nil
+	}
+
 	if err := deps.Queue.SaveCheckStatus(ctx, entry.ID, checkContext, checkState, targetURL); err != nil {
 		return fmt.Errorf("save check status for PR #%d: %w", entry.PrNumber, err)
 	}
@@ -303,6 +310,9 @@ func ProcessCheckStatus(ctx context.Context, deps *Deps, entry *pg.QueueEntry, c
 	case CheckSuccess:
 		return HandleSuccess(ctx, deps, entry)
 	case CheckFailure:
+		if retryEntry(ctx, deps, entry, requiredChecks) {
+			return nil
+		}
 		return HandleFailure(ctx, deps, entry, failedCheck, failedURL)
 	case CheckWaiting:
 		if CheckTimeout(entry, deps.CheckTimeout) {
@@ -311,4 +321,48 @@ func ProcessCheckStatus(ctx context.Context, deps *Deps, entry *pg.QueueEntry, c
 	}
 
 	return nil
+}
+
+func failed(s pg.CheckState) bool {
+	return s == pg.CheckStateFailure || s == pg.CheckStateError
+}
+
+// retryEntry reruns an infrastructure failure of a single-PR merge branch,
+// at most Retry.Max times per queue entry. Returns true when the PR stays
+// queued.
+func retryEntry(ctx context.Context, deps *Deps, entry *pg.QueueEntry, required []string) bool {
+	if int(entry.InfraRetries) >= deps.Retry.Max {
+		return false
+	}
+	sha := entry.MergeBranchSha.String
+	pattern, rerun, checks, ok := InfraRetry(ctx, deps.Retry, deps.FailureDetails, deps.Forge, deps.Owner, deps.Repo, sha, required)
+	if !ok {
+		return false
+	}
+	attempt, err := deps.Queue.IncrementInfraRetries(ctx, entry.ID)
+	if err != nil {
+		slog.Warn("infra retry: count failed", "pr", entry.PrNumber, "error", err)
+	}
+	byCtx := map[string]string{}
+	for _, c := range checks {
+		byCtx[c.Context] = c.TargetURL
+	}
+	for _, c := range rerun {
+		if err := deps.Queue.SaveCheckStatus(ctx, entry.ID, c, pg.CheckStatePending, byCtx[c]); err != nil {
+			slog.Warn("infra retry: reset check failed", "pr", entry.PrNumber, "check", c, "error", err)
+		}
+	}
+	targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
+	if err := deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{
+		State: pg.CheckStatePending, Description: fmt.Sprintf("Retrying after infrastructure failure (%d/%d)", attempt, deps.Retry.Max), TargetURL: targetURL,
+	}); err != nil {
+		slog.Warn("infra retry: set status failed", "pr", entry.PrNumber, "error", err)
+	}
+	slog.Info("infra retry: rerunning failed checks", "pr", entry.PrNumber, "pattern", pattern, "checks", rerun, "attempt", attempt)
+	deps.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: deps.RepoID, Kind: queue.EventInfraRetry, PRNumber: entry.PrNumber,
+		TargetBranch: entry.TargetBranch, HeadSHA: entry.PrHeadSha, Reason: "pattern",
+		Detail: map[string]any{"pattern": pattern, "checks": rerun, "attempt": attempt, "sha": sha},
+	})
+	return true
 }

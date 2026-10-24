@@ -11,6 +11,7 @@ import (
 	"github.com/Mic92/gitea-mq/internal/gitea"
 	"github.com/Mic92/gitea-mq/internal/monitor"
 	"github.com/Mic92/gitea-mq/internal/queue"
+	"github.com/Mic92/gitea-mq/internal/retry"
 	"github.com/Mic92/gitea-mq/internal/store/pg"
 	"github.com/Mic92/gitea-mq/internal/testutil"
 )
@@ -325,5 +326,104 @@ func TestHandleFailure_FailureDetails(t *testing.T) {
 	evs, _ := svc.ListEvents(ctx, queue.EventFilter{RepoID: repoID, Kind: queue.EventEjected, Limit: 1})
 	if len(evs) != 1 || !strings.Contains(string(evs[0].Detail), `"job": "build (push)"`) || strings.Contains(string(evs[0].Detail), secret) {
 		t.Fatalf("event detail = %s", evs[0].Detail)
+	}
+}
+
+func setupRetryTest(t *testing.T, logText string) (*monitor.Deps, *gitea.MockClient, *queue.Service, context.Context, *pg.QueueEntry, string) {
+	t.Helper()
+	deps, mock, svc, ctx, repoID := setupMonitorTest(t)
+	patterns, err := retry.ParsePatterns("# runner hiccups\nengine.sock: no such file\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps.Retry = retry.Policy{Patterns: patterns, Max: 1, Tracker: retry.NewTracker()}
+	withBranchProtection(mock, "gitea-mq", "ci / build (push)")
+	jobURL := "https://gitea.example.com/org/app/actions/runs/9/jobs/0"
+	mock.GetCombinedCommitStatusFn = func(context.Context, string, string, string) (*gitea.CombinedStatus, error) {
+		return &gitea.CombinedStatus{Statuses: []gitea.CommitStatusResult{
+			{Context: "ci / build (push)", Status: "failure", Description: "Failing after 1m", TargetURL: jobURL},
+		}}, nil
+	}
+	mock.ListRunJobsFn = func(context.Context, string, string, int64) ([]gitea.ActionJob, error) {
+		return []gitea.ActionJob{{ID: 7, RunID: 9, Name: "build (push)", HTMLURL: jobURL}}, nil
+	}
+	mock.GetJobLogsFn = func(context.Context, string, string, int64) ([]byte, error) {
+		return []byte(logText), nil
+	}
+	return deps, mock, svc, ctx, testutil.EnqueueTesting(t, svc, repoID, 42, "sha42", "mergesha"), jobURL
+}
+
+func TestInfraRetry_MatchRerunsOnceThenEjects(t *testing.T) {
+	deps, mock, svc, ctx, entry, jobURL := setupRetryTest(t, "pulling image\ndial unix /run/engine.sock: no such file or directory\n")
+	const check = "ci / build (push)"
+
+	if err := monitor.ProcessCheckStatus(ctx, deps, entry, check, pg.CheckStateFailure, jobURL); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mock.CallsTo("RerunJob")); n != 1 {
+		t.Fatalf("reruns = %d, want 1", n)
+	}
+	if n := len(mock.CallsTo("CreateComment")); n != 0 {
+		t.Fatalf("ejected on an infrastructure failure (%d comments)", n)
+	}
+	evs, _ := svc.ListEvents(ctx, queue.EventFilter{RepoID: deps.RepoID, Kind: queue.EventInfraRetry, Limit: 10})
+	if len(evs) != 1 || !strings.Contains(string(evs[0].Detail), "engine.sock") {
+		t.Fatalf("infra_retry events = %+v", evs)
+	}
+
+	// The stale failure echoed before the rerun reports is ignored.
+	entry, _ = svc.GetEntry(ctx, deps.RepoID, 42)
+	if err := monitor.ProcessCheckStatus(ctx, deps, entry, check, pg.CheckStateFailure, jobURL); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mock.CallsTo("CreateComment")) + len(mock.CallsTo("RerunJob")); n != 1 {
+		t.Fatalf("stale failure acted on")
+	}
+
+	// The rerun starts, then fails again: the PR is ejected.
+	if err := monitor.ProcessCheckStatus(ctx, deps, entry, check, pg.CheckStatePending, jobURL); err != nil {
+		t.Fatal(err)
+	}
+	entry, _ = svc.GetEntry(ctx, deps.RepoID, 42)
+	if err := monitor.ProcessCheckStatus(ctx, deps, entry, check, pg.CheckStateFailure, jobURL); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mock.CallsTo("RerunJob")); n != 1 {
+		t.Fatalf("reruns = %d, want 1", n)
+	}
+	if n := len(mock.CallsTo("CreateComment")); n != 1 {
+		t.Fatalf("second failure not ejected (%d comments)", n)
+	}
+}
+
+func TestInfraRetry_RerunPassesKeepsPR(t *testing.T) {
+	deps, mock, svc, ctx, entry, jobURL := setupRetryTest(t, "engine.sock: no such file\n")
+	const check = "ci / build (push)"
+	if err := monitor.ProcessCheckStatus(ctx, deps, entry, check, pg.CheckStateFailure, jobURL); err != nil {
+		t.Fatal(err)
+	}
+	entry, _ = svc.GetEntry(ctx, deps.RepoID, 42)
+	if err := monitor.ProcessCheckStatus(ctx, deps, entry, check, pg.CheckStateSuccess, jobURL); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mock.CallsTo("CreateComment")); n != 0 {
+		t.Fatalf("PR ejected after a passing rerun (%d comments)", n)
+	}
+	statuses, _ := svc.GetCheckStatuses(ctx, entry.ID)
+	if len(statuses) != 1 || statuses[0].State != pg.CheckStateSuccess {
+		t.Fatalf("ledger = %+v", statuses)
+	}
+}
+
+func TestInfraRetry_NoMatchEjects(t *testing.T) {
+	deps, mock, _, ctx, entry, jobURL := setupRetryTest(t, "--- FAIL: TestParse\nFAIL\n")
+	if err := monitor.ProcessCheckStatus(ctx, deps, entry, "ci / build (push)", pg.CheckStateFailure, jobURL); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mock.CallsTo("RerunJob")); n != 0 {
+		t.Fatalf("reruns = %d, want 0", n)
+	}
+	if n := len(mock.CallsTo("CreateComment")); n != 1 {
+		t.Fatalf("not ejected (%d comments)", n)
 	}
 }

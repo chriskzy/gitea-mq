@@ -862,3 +862,9 @@ func (c *HTTPClient) ListRuns(ctx context.Context, owner, repo string) ([]Action
 	}
 	return out.Runs, nil
 }
+
+// RerunJob reruns an Actions job.
+func (c *HTTPClient) RerunJob(ctx context.Context, owner, repo string, runID, jobID int64) error {
+	return c.doDiscard(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs/%d/rerun", owner, repo, runID, jobID), nil,
+		fmt.Sprintf("rerun job %d of run %d in %s/%s", jobID, runID, owner, repo))
+}

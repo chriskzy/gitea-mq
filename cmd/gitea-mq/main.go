@@ -11,10 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Mic92/gitea-mq/internal/failure"
-
 	"github.com/Mic92/gitea-mq/internal/config"
 	"github.com/Mic92/gitea-mq/internal/discovery"
+	"github.com/Mic92/gitea-mq/internal/failure"
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/gitea"
 	"github.com/Mic92/gitea-mq/internal/github"
@@ -23,6 +22,7 @@ import (
 	"github.com/Mic92/gitea-mq/internal/notify"
 	"github.com/Mic92/gitea-mq/internal/queue"
 	"github.com/Mic92/gitea-mq/internal/registry"
+	"github.com/Mic92/gitea-mq/internal/retry"
 	"github.com/Mic92/gitea-mq/internal/store/pg"
 	"github.com/Mic92/gitea-mq/internal/web"
 	"github.com/Mic92/gitea-mq/internal/webhook"
@@ -165,6 +165,11 @@ func run() error {
 			Enabled:  cfg.FailureDetails,
 			LogLines: cfg.FailureLogLines,
 			Secrets:  cfg.Secrets(),
+		},
+		Retry: retry.Policy{
+			Patterns: cfg.InfraRetryPatterns,
+			Max:      cfg.InfraRetryMax,
+			LogLines: cfg.FailureLogLines,
 		},
 		Approval: forge.ApprovalPolicy{
 			Require: cfg.RequireApproval,

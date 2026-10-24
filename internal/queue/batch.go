@@ -134,6 +134,7 @@ func saveBatch(ctx context.Context, q *pg.Queries, b *pg.Batch) error {
 		FfRetries:        b.FfRetries,
 		Flaky:            b.Flaky,
 		TestingStartedAt: b.TestingStartedAt,
+		InfraRetries:     b.InfraRetries,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrBatchNotLive
