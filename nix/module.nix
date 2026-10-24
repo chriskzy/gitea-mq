@@ -294,6 +294,20 @@ in
       description = "Log lines per failing job in failure details; 0 lists checks only.";
     };
 
+    infraRetry = {
+      patterns = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "engine\\.sock: no such file" ];
+        description = "Regexes for infrastructure failures that are rerun once instead of ejecting.";
+      };
+      max = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 1;
+        description = "Reruns per queue entry or batch build before ejecting.";
+      };
+    };
+
     logLevel = lib.mkOption {
       type = lib.types.enum [
         "debug"
@@ -411,6 +425,8 @@ in
         GITEA_MQ_LOG_LEVEL = cfg.logLevel;
         GITEA_MQ_FAILURE_DETAILS = lib.boolToString cfg.failureDetails;
         GITEA_MQ_FAILURE_LOG_LINES = toString cfg.failureLogLines;
+        GITEA_MQ_INFRA_RETRY_PATTERNS = lib.concatStringsSep "\n" cfg.infraRetry.patterns;
+        GITEA_MQ_INFRA_RETRY_MAX = toString cfg.infraRetry.max;
         GITEA_MQ_METRICS = lib.boolToString cfg.metrics;
         GITEA_MQ_EVENT_RETENTION = cfg.eventRetention;
       }

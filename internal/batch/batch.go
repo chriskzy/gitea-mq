@@ -15,12 +15,12 @@ import (
 	"time"
 
 	"github.com/Mic92/gitea-mq/internal/failure"
-
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/logutil"
 	"github.com/Mic92/gitea-mq/internal/merge"
 	"github.com/Mic92/gitea-mq/internal/monitor"
 	"github.com/Mic92/gitea-mq/internal/queue"
+	"github.com/Mic92/gitea-mq/internal/retry"
 	"github.com/Mic92/gitea-mq/internal/store/pg"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -61,6 +61,8 @@ type Engine struct {
 	// FailureDetails controls collecting failing checks and job logs for
 	// ejection comments and events.
 	FailureDetails failure.Options
+	// Retry reruns infrastructure failures of a build instead of bisecting.
+	Retry retry.Policy
 	// Approval is re-checked right before landing: an approval dismissed
 	// while the batch tested must not be fast-forwarded past.
 	Approval forge.ApprovalPolicy
@@ -225,6 +227,7 @@ func (e *Engine) Build(ctx context.Context, b *pg.Batch) error {
 	b.TestingStartedAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
 	first := b.Builds == 0
 	b.Builds++
+	b.InfraRetries = 0
 	if err := e.Queue.SaveBatch(ctx, b, b.EjectedIds...); err != nil {
 		return err
 	}
@@ -389,6 +392,9 @@ func (e *Engine) HandlePass(ctx context.Context, b *pg.Batch) error {
 // A failing singleton is ejected with the failed check attributed.
 func (e *Engine) HandleFail(ctx context.Context, b *pg.Batch, failedCheck, targetURL string) error {
 	if b.State != pg.BatchStateTesting {
+		return nil
+	}
+	if failedCheck != "timeout" && e.retryBuild(ctx, b) {
 		return nil
 	}
 	if len(b.CurrentIds) == 1 {
@@ -602,7 +608,7 @@ func popNext(b *pg.Batch) bool {
 	}
 	// Root failed but every member eventually landed and nobody was ejected →
 	// flaky CI or a cross-PR interaction across halves.
-	b.Flaky = len(b.EjectedIds) == 0 && b.Builds > 1 &&
+	b.Flaky = b.Flaky || len(b.EjectedIds) == 0 && b.Builds > 1 &&
 		len(b.LandedIds) == len(b.MemberIds)
 	b.State = pg.BatchStateDone
 	b.CurrentIds = nil
@@ -832,4 +838,40 @@ func withStatus(extra map[string]any, status string) map[string]any {
 		d[k] = v
 	}
 	return d
+}
+
+// retryBuild reruns the failed checks of the current build when they match an
+// infrastructure pattern, at most Retry.Max times per build. The batch is
+// marked flaky either way the rerun ends.
+func (e *Engine) retryBuild(ctx context.Context, b *pg.Batch) bool {
+	if int(b.InfraRetries) >= e.Retry.Max {
+		return false
+	}
+	required, _ := monitor.ResolveCheckList(ctx, e.Forge, e.Owner, e.Repo, b.TargetBranch, e.MergeChecks, e.FallbackChecks, e.ChecksFromConfig)
+	sha := b.BranchSha.String
+	pattern, rerun, checks, ok := monitor.InfraRetry(ctx, e.Retry, e.FailureDetails, e.Forge, e.Owner, e.Repo, sha, required)
+	if !ok {
+		return false
+	}
+	b.InfraRetries++
+	b.Flaky = true
+	if err := e.Queue.SaveBatch(ctx, b, b.EjectedIds...); err != nil {
+		slog.Warn("infra retry: save batch failed", "batch", b.ID, "error", err)
+	}
+	byCtx := map[string]string{}
+	for _, c := range checks {
+		byCtx[c.Context] = c.TargetURL
+	}
+	for _, id := range b.CurrentIds {
+		for _, c := range rerun {
+			logutil.WarnIfErr(e.Queue.SaveCheckStatus(ctx, id, c, pg.CheckStatePending, byCtx[c]), "infra retry: reset check failed", "batch", b.ID)
+		}
+	}
+	slog.Info("infra retry: rerunning failed batch checks", "batch", b.ID, "pattern", pattern, "checks", rerun, "attempt", b.InfraRetries)
+	e.Queue.RecordEvent(ctx, queue.Event{
+		RepoID: e.RepoID, Kind: queue.EventInfraRetry, BatchID: b.ID, TargetBranch: b.TargetBranch,
+		Reason: "pattern",
+		Detail: map[string]any{"pattern": pattern, "checks": rerun, "attempt": b.InfraRetries, "sha": sha, "build": b.Builds},
+	})
+	return true
 }

@@ -5,11 +5,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Mic92/gitea-mq/internal/forge"
+	"github.com/Mic92/gitea-mq/internal/retry"
 )
 
 // Config holds all configuration for the gitea-mq service.
@@ -43,6 +45,10 @@ type Config struct {
 	EventRetention time.Duration
 	// FailureDetails posts failing checks and job log tails on ejection.
 	FailureDetails bool
+	// InfraRetryPatterns are regexes for failures that are rerun instead of
+	// ejecting; InfraRetryMax caps reruns per tested SHA.
+	InfraRetryPatterns []*regexp.Regexp
+	InfraRetryMax      int
 	// FailureLogLines is how many trailing log lines to include per job.
 	FailureLogLines int
 	// NotifyURL receives every queue event as a signed POST; empty disables.
@@ -280,6 +286,18 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.FailureLogLines, err = parseInt("GITEA_MQ_FAILURE_LOG_LINES", 30, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := readSecretString("GITEA_MQ_INFRA_RETRY_PATTERNS")
+	if err != nil {
+		return nil, err
+	}
+	if cfg.InfraRetryPatterns, err = retry.ParsePatterns(raw); err != nil {
+		return nil, fmt.Errorf("GITEA_MQ_INFRA_RETRY_PATTERNS: %w", err)
+	}
+	cfg.InfraRetryMax, err = parseInt("GITEA_MQ_INFRA_RETRY_MAX", 1, 0)
 	if err != nil {
 		return nil, err
 	}

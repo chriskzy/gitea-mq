@@ -28,6 +28,9 @@ const (
 	EventBatchFormed   EventKind = "batch_formed"
 	EventBatchBisected EventKind = "batch_bisected"
 	EventBatchLanded   EventKind = "batch_landed"
+	// EventInfraRetry: a failure matched an infrastructure pattern and the
+	// failed checks were rerun instead of ejecting.
+	EventInfraRetry EventKind = "infra_retry"
 )
 
 // Event is one queue transition. Zero PRNumber/BatchID are stored as NULL.

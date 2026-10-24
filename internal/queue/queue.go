@@ -218,3 +218,9 @@ func (s *Service) GetOrCreateRepo(ctx context.Context, forge, owner, name string
 func (s *Service) DequeueAll(ctx context.Context, repoID int64) error {
 	return s.queries().DequeueAllByRepo(ctx, repoID)
 }
+
+// IncrementInfraRetries counts an infrastructure-failure retry for the entry
+// and returns the new count.
+func (s *Service) IncrementInfraRetries(ctx context.Context, entryID int64) (int32, error) {
+	return s.queries().IncrementEntryInfraRetries(ctx, entryID)
+}

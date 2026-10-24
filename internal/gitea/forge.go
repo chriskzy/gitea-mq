@@ -46,6 +46,7 @@ var (
 	_ forge.ApprovalRequirer   = (*giteaForge)(nil)
 	_ forge.ManualMerger       = (*giteaForge)(nil)
 	_ forge.JobLogFetcher      = (*giteaForge)(nil)
+	_ forge.JobRerunner        = (*giteaForge)(nil)
 )
 
 // StackMerges builds the batch branch in one clone instead of one per member.
@@ -470,4 +471,12 @@ func (f *giteaForge) JobLog(ctx context.Context, owner, name, targetURL string) 
 	}
 	log, err := f.client.GetJobLogs(ctx, owner, name, job.ID)
 	return job.Name, log, err
+}
+
+func (f *giteaForge) RerunJob(ctx context.Context, owner, name, targetURL string) error {
+	job, err := f.resolveJob(ctx, owner, name, targetURL)
+	if err != nil {
+		return err
+	}
+	return f.client.RerunJob(ctx, owner, name, job.RunID, job.ID)
 }
