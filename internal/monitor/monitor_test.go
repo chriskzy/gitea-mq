@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,46 +20,82 @@ import (
 
 func TestOverlappingFailuresNotifyOnceAndDoNotDeleteReplacement(t *testing.T) {
 	deps, mock, svc, ctx, repoID := setupMonitorTest(t)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	entry := testutil.EnqueueTesting(t, svc, repoID, 42, "sha42", "merge-sha")
 	entered, release := make(chan struct{}), make(chan struct{})
-	var comments atomic.Int32
-	mock.CreateCommentFn = func(context.Context, string, string, int64, string) error {
-		if comments.Add(1) == 1 {
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	var statuses, comments, lateCleanup atomic.Int32
+	var replacementActive atomic.Bool
+	mock.CreateCommitStatusFn = func(context.Context, string, string, string, gitea.CommitStatus) error {
+		if statuses.Add(1) == 1 {
 			close(entered)
 			<-release
+		}
+		return nil
+	}
+	mock.CreateCommentFn = func(context.Context, string, string, int64, string) error { comments.Add(1); return nil }
+	mock.CancelAutoMergeFn = func(context.Context, string, string, int64) error {
+		if replacementActive.Load() {
+			lateCleanup.Add(1)
+		}
+		return nil
+	}
+	mock.DeleteBranchFn = func(context.Context, string, string, string) error {
+		if replacementActive.Load() {
+			lateCleanup.Add(1)
 		}
 		return nil
 	}
 	first := make(chan error, 1)
 	go func() { first <- monitor.HandleFailure(ctx, deps, entry, "ci/build", "") }()
 	<-entered
-	second := monitor.HandleFailure(ctx, deps, entry, "ci/build", "")
-	if second != nil {
-		close(release)
-		t.Fatal(second)
+	second := make(chan error, 1)
+	go func() { second <- monitor.HandleFailure(ctx, deps, entry, "ci/build", "") }()
+	type admission struct {
+		result *queue.EnqueueResult
+		err    error
 	}
-	// A stale second handler may finish removal, but must not delete a new entry.
-	replacement, err := svc.Enqueue(ctx, repoID, 42, "fixed-head", "main", false)
-	if err != nil {
-		close(release)
-		t.Fatal(err)
+	replacement := make(chan admission, 1)
+	go func() {
+		r, err := svc.EnqueueAutomatic(ctx, repoID, 42, "fixed-head", "main", false, true)
+		if err == nil && r != nil {
+			replacementActive.Store(true)
+		}
+		replacement <- admission{r, err}
+	}()
+	select {
+	case got := <-replacement:
+		t.Fatalf("replacement entered before forge cleanup: %+v", got)
+	case <-time.After(50 * time.Millisecond):
 	}
-	close(release)
+	select {
+	case err := <-second:
+		t.Fatalf("duplicate handler released owner entry early: %v", err)
+	default:
+	}
+	unblock()
 	if err := <-first; err != nil {
 		t.Fatal(err)
 	}
-	if comments.Load() != 1 {
-		t.Fatalf("duplicate removal notifications=%d", comments.Load())
+	if err := <-second; err != nil {
+		t.Fatal(err)
 	}
-	got, err := svc.GetEntry(ctx, repoID, 42)
-	if err != nil || got == nil || got.ID != replacement.Entry.ID {
-		t.Fatalf("stale handler removed replacement: %+v %v", got, err)
+	got := <-replacement
+	if got.err != nil || got.result == nil || !got.result.IsNew {
+		t.Fatalf("replacement failed: %+v", got)
 	}
 	if err := monitor.HandleFailure(ctx, deps, entry, "ci/build", ""); err != nil {
 		t.Fatal(err)
 	}
-	if comments.Load() != 1 {
-		t.Fatal("stale webhook posted another removal")
+	if comments.Load() != 1 || lateCleanup.Load() != 0 {
+		t.Fatalf("comments=%d late cleanup=%d", comments.Load(), lateCleanup.Load())
+	}
+	current, err := svc.GetEntry(ctx, repoID, 42)
+	if err != nil || current == nil || current.ID != got.result.Entry.ID {
+		t.Fatalf("replacement lost: %+v %v", current, err)
 	}
 }
 

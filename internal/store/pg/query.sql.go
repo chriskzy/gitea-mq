@@ -718,6 +718,15 @@ func (q *Queries) LockAdmission(ctx context.Context, lockKey string) error {
 	return err
 }
 
+const lockRejection = `-- name: LockRejection :exec
+SELECT pg_advisory_lock(hashtextextended($1::text, 0))
+`
+
+func (q *Queries) LockRejection(ctx context.Context, lockKey string) error {
+	_, err := q.db.Exec(ctx, lockRejection, lockKey)
+	return err
+}
+
 const observeClearedIntent = `-- name: ObserveClearedIntent :exec
 UPDATE rejected_heads SET intent_cleared = TRUE
 WHERE repo_id = $1 AND pr_number = $2 AND head_sha = $3
@@ -1004,6 +1013,17 @@ func (q *Queries) TakeQueuedHead(ctx context.Context, arg TakeQueuedHeadParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const unlockRejection = `-- name: UnlockRejection :one
+SELECT pg_advisory_unlock(hashtextextended($1::text, 0))
+`
+
+func (q *Queries) UnlockRejection(ctx context.Context, lockKey string) (bool, error) {
+	row := q.db.QueryRow(ctx, unlockRejection, lockKey)
+	var pg_advisory_unlock bool
+	err := row.Scan(&pg_advisory_unlock)
+	return pg_advisory_unlock, err
 }
 
 const updateEntryError = `-- name: UpdateEntryError :exec

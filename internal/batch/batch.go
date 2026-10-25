@@ -658,28 +658,28 @@ func (e *Engine) eject(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, rea
 
 // ejectWith is eject with extra event detail (e.g. failure details).
 func (e *Engine) ejectWith(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, reason string, state pg.CheckState, statusDesc, comment string, extra map[string]any) error {
-	claimed, err := e.Queue.RejectHead(ctx, ent)
-	if err != nil {
-		return fmt.Errorf("record rejected head: %w", err)
-	}
-	if !claimed {
-		b.EjectedIds = append(b.EjectedIds, ent.ID)
-		return nil
-	}
-	logutil.WarnIfErr(e.Forge.SetMQStatus(ctx, e.Owner, e.Repo, ent.PrHeadSha, forge.MQStatus{
-		State: state, Description: statusDesc, TargetURL: e.prURL(ent.PrNumber),
-	}), "set mq status failed", "pr", ent.PrNumber)
-	merge.SkipPendingMirroredChecks(ctx, e.Forge, e.Owner, e.Repo, ent.PrHeadSha)
-	logutil.WarnIfErr(forge.CancelMergeIntent(ctx, e.Forge, e.Owner, e.Repo, ent.PrNumber, e.MergeLabel), "cancel merge intent failed", "pr", ent.PrNumber)
-	logutil.WarnIfErr(e.Forge.Comment(ctx, e.Owner, e.Repo, ent.PrNumber, comment), "post comment failed", "pr", ent.PrNumber)
-	// The next SaveBatch deletes EjectedIds from the queue.
-	b.EjectedIds = append(b.EjectedIds, ent.ID)
-	e.Queue.RecordEvent(ctx, queue.Event{
-		RepoID: e.RepoID, Kind: queue.EventEjected, PRNumber: ent.PrNumber, BatchID: b.ID,
-		TargetBranch: b.TargetBranch, HeadSHA: ent.PrHeadSha, Reason: reason,
-		Detail:     withStatus(extra, statusDesc),
-		EnqueuedAt: ent.EnqueuedAt.Time,
+	claimed, err := e.Queue.RejectHead(ctx, ent, false, func(notify bool) {
+		logutil.WarnIfErr(e.Forge.SetMQStatus(ctx, e.Owner, e.Repo, ent.PrHeadSha, forge.MQStatus{
+			State: state, Description: statusDesc, TargetURL: e.prURL(ent.PrNumber),
+		}), "set mq status failed", "pr", ent.PrNumber)
+		merge.SkipPendingMirroredChecks(ctx, e.Forge, e.Owner, e.Repo, ent.PrHeadSha)
+		logutil.WarnIfErr(forge.CancelMergeIntent(ctx, e.Forge, e.Owner, e.Repo, ent.PrNumber, e.MergeLabel), "cancel merge intent failed", "pr", ent.PrNumber)
+		if notify {
+			logutil.WarnIfErr(e.Forge.Comment(ctx, e.Owner, e.Repo, ent.PrNumber, comment), "post comment failed", "pr", ent.PrNumber)
+		}
 	})
+	if err != nil {
+		return fmt.Errorf("reject queue attempt: %w", err)
+	}
+	// Metadata cleanup finishes before SaveBatch frees this attempt's entry.
+	b.EjectedIds = append(b.EjectedIds, ent.ID)
+	if claimed {
+		e.Queue.RecordEvent(ctx, queue.Event{
+			RepoID: e.RepoID, Kind: queue.EventEjected, PRNumber: ent.PrNumber, BatchID: b.ID,
+			TargetBranch: b.TargetBranch, HeadSHA: ent.PrHeadSha, Reason: reason,
+			Detail: withStatus(extra, statusDesc), EnqueuedAt: ent.EnqueuedAt.Time,
+		})
+	}
 	return nil
 }
 

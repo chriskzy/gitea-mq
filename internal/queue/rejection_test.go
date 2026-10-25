@@ -26,7 +26,7 @@ func TestRejectionPersistsAcrossServicesAndRequiresFreshIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = svc.RejectHead(ctx, &first.Entry); err != nil {
+	if _, err = svc.RejectHead(ctx, &first.Entry, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err = svc.Dequeue(ctx, repo.ID, 42); err != nil {
@@ -57,7 +57,7 @@ func TestRejectionPersistsAcrossServicesAndRequiresFreshIntent(t *testing.T) {
 	if err != nil || got == nil || !got.IsNew {
 		t.Fatalf("fresh explicit reschedule failed: %+v %v", got, err)
 	}
-	if _, err = svc.RejectHead(ctx, &got.Entry); err != nil {
+	if _, err = svc.RejectHead(ctx, &got.Entry, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err = svc.Dequeue(ctx, repo.ID, 42); err != nil {
@@ -108,7 +108,7 @@ func TestRejectionStorageFailureFailsClosed(t *testing.T) {
 	if _, err = pool.Exec(ctx, "DROP TABLE rejected_heads"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = svc.RejectHead(ctx, &entry.Entry); err == nil {
+	if _, err = svc.RejectHead(ctx, &entry.Entry, false, nil); err == nil {
 		t.Fatal("rejection write failure was hidden")
 	}
 	if existing, err := svc.GetEntry(ctx, repo.ID, 42); err != nil || existing == nil {
@@ -116,5 +116,54 @@ func TestRejectionStorageFailureFailsClosed(t *testing.T) {
 	}
 	if got, err := svc.EnqueueAutomatic(ctx, repo.ID, 43, "other", "main", false, false); err == nil || got != nil {
 		t.Fatalf("admission did not fail closed: %+v %v", got, err)
+	}
+}
+
+func TestInterruptedRejectionRecoversWithoutNotificationOrLeakedLock(t *testing.T) {
+	pool := testutil.TestDB(t)
+	svc := queue.NewService(pool)
+	ctx := t.Context()
+	repo, err := svc.GetOrCreateRepo(ctx, "gitea", "org", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := svc.Enqueue(ctx, repo.ID, 42, "head", "main", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interrupted, cancel := context.WithCancel(ctx)
+	_, err = svc.RejectHead(interrupted, &entry.Entry, true, func(notify bool) {
+		if !notify {
+			t.Error("first attempt did not claim notification")
+		}
+		cancel()
+	})
+	if err == nil {
+		t.Fatal("interrupted deletion unexpectedly succeeded")
+	}
+	// A different pool must acquire the same lock and finish the durable orphan.
+	recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer recoveryCancel()
+	recoveryPool, err := pgxpool.NewWithConfig(recoveryCtx, pool.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recoveryPool.Close()
+	recovery := queue.NewService(recoveryPool)
+	cleaned := false
+	claimed, err := recovery.RejectHead(recoveryCtx, &entry.Entry, true, func(notify bool) {
+		cleaned = true
+		if notify {
+			t.Error("orphan recovery repeated notification")
+		}
+	})
+	if err != nil || claimed || !cleaned {
+		t.Fatalf("orphan did not recover: claimed=%v cleaned=%v err=%v", claimed, cleaned, err)
+	}
+	if old, err := recovery.GetEntry(ctx, repo.ID, 42); err != nil || old != nil {
+		t.Fatalf("orphan remains: %+v %v", old, err)
+	}
+	if retry, err := recovery.EnqueueAutomatic(ctx, repo.ID, 42, "head", "main", false, false); err != nil || retry != nil {
+		t.Fatalf("old approval retried recovered rejection: %+v %v", retry, err)
 	}
 }

@@ -138,6 +138,11 @@ func removePR(ctx context.Context, deps *Deps, result *PollResult, entry *pg.Que
 		merge.CleanupMergeBranch(ctx, deps.Forge, deps.Owner, deps.Repo, entry)
 	}
 
+	recordRemoval(ctx, deps, result, entry, opts)
+	return nil
+}
+
+func recordRemoval(ctx context.Context, deps *Deps, result *PollResult, entry *pg.QueueEntry, opts removeOpts) {
 	deps.Queue.RecordEvent(ctx, queue.Event{
 		RepoID:       deps.RepoID,
 		Kind:         removalEventKind(opts.reason),
@@ -154,7 +159,6 @@ func removePR(ctx context.Context, deps *Deps, result *PollResult, entry *pg.Que
 	}
 
 	slog.Info(opts.logMsg, append([]any{"pr", entry.PrNumber}, opts.logAttrs...)...)
-	return nil
 }
 
 // removalEventKind distinguishes a PR leaving on its own (merged, closed,
@@ -789,7 +793,6 @@ func handleSuccessTimeout(ctx context.Context, deps *Deps, result *PollResult, e
 	removeTimedOut(ctx, deps, result, entry, timedOutRemoval{
 		reason:            "success_timeout",
 		statusDescription: "Merge did not complete in time",
-		errorMessage:      "merge did not complete in time",
 		comment:           "⚠️ Removed from merge queue: PR was marked as ready to merge but the forge did not merge it in time. This may indicate a branch protection issue.",
 		logMsg:            "removed PR due to success-but-not-merged timeout",
 	})
@@ -813,7 +816,6 @@ func handleTestingTimeout(ctx context.Context, deps *Deps, result *PollResult, e
 	removeTimedOut(ctx, deps, result, entry, timedOutRemoval{
 		reason:            "testing_timeout",
 		statusDescription: "CI did not report within timeout",
-		errorMessage:      "CI did not report within timeout",
 		comment:           "⚠️ Removed from merge queue: CI did not report a status within the timeout. The CI server may have lost the build.",
 		logMsg:            "removed PR due to testing timeout",
 	})
@@ -829,7 +831,6 @@ func timedOut(now time.Time, ts pgtype.Timestamptz, timeout time.Duration) bool 
 type timedOutRemoval struct {
 	reason            string // queue event reason
 	statusDescription string // MQ commit status shown on the PR head
-	errorMessage      string // stored on the queue entry
 	comment           string // posted on the PR
 	logMsg            string
 }
@@ -837,31 +838,26 @@ type timedOutRemoval struct {
 // removeTimedOut marks the entry's MQ status and queue error, then dequeues it
 // (cancelling automerge and advancing the queue).
 func removeTimedOut(ctx context.Context, deps *Deps, result *PollResult, entry *pg.QueueEntry, opts timedOutRemoval) {
-	claimed, err := deps.Queue.RejectHead(ctx, entry)
-	if err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("record rejected head: %w", err))
-		return
-	}
-	if !claimed {
-		if err := deps.Queue.DequeueEntry(ctx, entry.ID); err != nil {
-			result.Errors = append(result.Errors, err)
+	claimed, err := deps.Queue.RejectHead(ctx, entry, true, func(notify bool) {
+		targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
+		logutil.WarnIfErr(deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{
+			State: pg.CheckStateError, Description: opts.statusDescription, TargetURL: targetURL,
+		}), "set mq status failed", "pr", entry.PrNumber)
+		merge.SkipPendingMirroredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrHeadSha)
+		logutil.WarnIfErr(forge.CancelMergeIntent(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrNumber, deps.MergeLabel), "cancel merge intent failed", "pr", entry.PrNumber)
+		if notify {
+			logutil.WarnIfErr(deps.Forge.Comment(ctx, deps.Owner, deps.Repo, entry.PrNumber, opts.comment), "post comment failed", "pr", entry.PrNumber)
 		}
+		if !entry.ActiveBatchID.Valid {
+			merge.CleanupMergeBranch(ctx, deps.Forge, deps.Owner, deps.Repo, entry)
+		}
+	})
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("reject timed-out attempt: %w", err))
 		return
 	}
-	targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
-	logutil.WarnIfErr(deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{
-		State: pg.CheckStateError, Description: opts.statusDescription, TargetURL: targetURL,
-	}), "set mq status failed", "pr", entry.PrNumber)
-	logutil.WarnIfErr(deps.Queue.SetError(ctx, deps.RepoID, entry.PrNumber, opts.errorMessage), "set queue error failed", "pr", entry.PrNumber)
-
-	if err := removePR(ctx, deps, result, entry, removeOpts{
-		reason:       opts.reason,
-		cancelIntent: true,
-		comment:      opts.comment,
-		advance:      true,
-		logMsg:       opts.logMsg,
-	}); err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("dequeue timed-out PR #%d: %w", entry.PrNumber, err))
+	if claimed {
+		recordRemoval(ctx, deps, result, entry, removeOpts{reason: opts.reason, advance: true, logMsg: opts.logMsg})
 	}
 }
 

@@ -17,6 +17,12 @@ WHERE repo_id = $1 AND pr_number = $2;
 -- name: LockAdmission :exec
 SELECT pg_advisory_xact_lock(hashtextextended(@lock_key::text, 0));
 
+-- name: LockRejection :exec
+SELECT pg_advisory_lock(hashtextextended(@lock_key::text, 0));
+
+-- name: UnlockRejection :one
+SELECT pg_advisory_unlock(hashtextextended(@lock_key::text, 0));
+
 -- name: RejectHead :one
 INSERT INTO rejected_heads (repo_id, pr_number, head_sha, target_branch, entry_id)
 SELECT repo_id, pr_number, pr_head_sha, target_branch, id

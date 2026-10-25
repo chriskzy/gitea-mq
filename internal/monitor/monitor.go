@@ -236,40 +236,32 @@ func HandleTimeout(ctx context.Context, deps *Deps, entry *pg.QueueEntry) error 
 }
 
 func removeFromQueue(ctx context.Context, deps *Deps, entry *pg.QueueEntry, reason string, detail map[string]any, statusState pg.CheckState, statusDesc, comment string) error {
-	claimed, err := deps.Queue.RejectHead(ctx, entry)
-	if err != nil {
-		return fmt.Errorf("record rejected head: %w", err)
-	}
-	if !claimed {
-		return deps.Queue.DequeueEntry(ctx, entry.ID)
-	}
-	targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
-	if err := deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{
-		State: statusState, Description: statusDesc, TargetURL: targetURL,
-	}); err != nil {
-		slog.Warn("failed to set status", "pr", entry.PrNumber, "error", err)
-	}
-
-	if err := forge.CancelMergeIntent(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrNumber, deps.MergeLabel); err != nil {
-		slog.Warn("failed to cancel merge intent", "pr", entry.PrNumber, "error", err)
-	}
-
-	if err := deps.Forge.Comment(ctx, deps.Owner, deps.Repo, entry.PrNumber, comment); err != nil {
-		slog.Warn("failed to post comment", "pr", entry.PrNumber, "error", err)
-	}
-
-	merge.CleanupMergeBranch(ctx, deps.Forge, deps.Owner, deps.Repo, entry)
-
-	if err := deps.Queue.DequeueEntry(ctx, entry.ID); err != nil {
-		return err
-	}
-	merge.SkipPendingMirroredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrHeadSha)
-	deps.Queue.RecordEvent(ctx, queue.Event{
-		RepoID: deps.RepoID, Kind: queue.EventEjected, PRNumber: entry.PrNumber,
-		TargetBranch: entry.TargetBranch, HeadSHA: entry.PrHeadSha, Reason: reason, Detail: detail,
-		EnqueuedAt: entry.EnqueuedAt.Time,
+	claimed, err := deps.Queue.RejectHead(ctx, entry, true, func(notify bool) {
+		targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
+		if err := deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{State: statusState, Description: statusDesc, TargetURL: targetURL}); err != nil {
+			slog.Warn("failed to set status", "pr", entry.PrNumber, "error", err)
+		}
+		if err := forge.CancelMergeIntent(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrNumber, deps.MergeLabel); err != nil {
+			slog.Warn("failed to cancel merge intent", "pr", entry.PrNumber, "error", err)
+		}
+		if notify {
+			if err := deps.Forge.Comment(ctx, deps.Owner, deps.Repo, entry.PrNumber, comment); err != nil {
+				slog.Warn("failed to post comment", "pr", entry.PrNumber, "error", err)
+			}
+		}
+		merge.CleanupMergeBranch(ctx, deps.Forge, deps.Owner, deps.Repo, entry)
+		merge.SkipPendingMirroredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrHeadSha)
 	})
-
+	if err != nil {
+		return fmt.Errorf("reject queue attempt: %w", err)
+	}
+	if claimed {
+		deps.Queue.RecordEvent(ctx, queue.Event{
+			RepoID: deps.RepoID, Kind: queue.EventEjected, PRNumber: entry.PrNumber,
+			TargetBranch: entry.TargetBranch, HeadSHA: entry.PrHeadSha, Reason: reason, Detail: detail,
+			EnqueuedAt: entry.EnqueuedAt.Time,
+		})
+	}
 	return nil
 }
 
