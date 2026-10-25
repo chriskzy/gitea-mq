@@ -216,6 +216,25 @@ func prCheckResult(ctx context.Context, deps *Deps, pr *forge.PR, targetBranch s
 // PollOnce runs a single reconcile cycle for one repository.
 func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 	result := &PollResult{}
+	// Recover every non-batch state before forge observation or admission. In
+	// particular, an interrupted success timeout must not reach MergePR below.
+	active, err := deps.Queue.ListActiveEntries(ctx, deps.RepoID)
+	if err != nil {
+		return nil, fmt.Errorf("list interrupted attempts: %w", err)
+	}
+	for i := range active {
+		entry := &active[i]
+		if entry.ActiveBatchID.Valid {
+			continue
+		} // batch consumption prunes before rebuild/landing
+		recovered, err := merge.RecoverRejected(ctx, deps.Forge, deps.Queue, deps.Owner, deps.Repo, entry, deps.ExternalURL, deps.MergeLabel)
+		if err != nil {
+			return nil, fmt.Errorf("recover rejected PR #%d: %w", entry.PrNumber, err)
+		}
+		if recovered {
+			result.Dequeued = append(result.Dequeued, entry.PrNumber)
+		}
+	}
 	observedAt, err := deps.Queue.AdmissionObservationTime(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin admission observation: %w", err)

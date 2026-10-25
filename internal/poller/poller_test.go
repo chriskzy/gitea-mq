@@ -1067,3 +1067,37 @@ func TestPollOnceCannotFastTrackInterruptedRejection(t *testing.T) {
 		t.Fatal("recovery repeated notification")
 	}
 }
+
+func TestPollOnceCannotLandInterruptedRejectedSuccess(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	deps.Approval.OnApproval = true
+	mock.ListOpenPRsFn = func(context.Context, string, string) ([]gitea.PR, error) {
+		return []gitea.PR{makePR(42, "sha42", "main")}, nil
+	}
+	entry, err := svc.Enqueue(ctx, repoID, 42, "sha42", "main", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UpdateState(ctx, repoID, 42, pg.EntryStateSuccess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RejectHead(ctx, &entry.Entry, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		result, err := poller.PollOnce(ctx, deps)
+		if err != nil || len(result.Errors) != 0 {
+			t.Fatalf("poll failed: %+v %v", result, err)
+		}
+	}
+	if len(mock.CallsTo("MergePR")) != 0 {
+		t.Fatal("rejected success attempt was merged")
+	}
+	remaining, err := svc.GetEntry(ctx, repoID, 42)
+	if err != nil || remaining != nil {
+		t.Fatalf("rejected entry survived: %+v %v", remaining, err)
+	}
+	if len(mock.CallsTo("CreateComment")) != 0 {
+		t.Fatal("recovery repeated notification")
+	}
+}
