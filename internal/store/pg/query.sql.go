@@ -42,6 +42,28 @@ func (q *Queries) ClearEntryMergeBranch(ctx context.Context, ids []int64) error 
 	return err
 }
 
+const clearRejectedHead = `-- name: ClearRejectedHead :exec
+DELETE FROM rejected_heads
+WHERE repo_id = $1 AND pr_number = $2 AND head_sha = $3 AND target_branch = $4
+`
+
+type ClearRejectedHeadParams struct {
+	RepoID       int64  `json:"repo_id"`
+	PrNumber     int64  `json:"pr_number"`
+	HeadSha      string `json:"head_sha"`
+	TargetBranch string `json:"target_branch"`
+}
+
+func (q *Queries) ClearRejectedHead(ctx context.Context, arg ClearRejectedHeadParams) error {
+	_, err := q.db.Exec(ctx, clearRejectedHead,
+		arg.RepoID,
+		arg.PrNumber,
+		arg.HeadSha,
+		arg.TargetBranch,
+	)
+	return err
+}
+
 const countQueuePosition = `-- name: CountQueuePosition :one
 SELECT COUNT(*) FROM queue_entries qe
 JOIN queue_entries me ON me.repo_id = qe.repo_id AND me.pr_number = $3
@@ -412,6 +434,30 @@ func (q *Queries) GetQueueEntry(ctx context.Context, arg GetQueueEntryParams) (Q
 	return i, err
 }
 
+const getRejectedHead = `-- name: GetRejectedHead :one
+SELECT intent_cleared FROM rejected_heads
+WHERE repo_id = $1 AND pr_number = $2 AND head_sha = $3 AND target_branch = $4
+`
+
+type GetRejectedHeadParams struct {
+	RepoID       int64  `json:"repo_id"`
+	PrNumber     int64  `json:"pr_number"`
+	HeadSha      string `json:"head_sha"`
+	TargetBranch string `json:"target_branch"`
+}
+
+func (q *Queries) GetRejectedHead(ctx context.Context, arg GetRejectedHeadParams) (bool, error) {
+	row := q.db.QueryRow(ctx, getRejectedHead,
+		arg.RepoID,
+		arg.PrNumber,
+		arg.HeadSha,
+		arg.TargetBranch,
+	)
+	var intent_cleared bool
+	err := row.Scan(&intent_cleared)
+	return intent_cleared, err
+}
+
 const hasEvent = `-- name: HasEvent :one
 SELECT EXISTS (
     SELECT 1 FROM queue_events
@@ -652,6 +698,31 @@ func (q *Queries) ListLiveBatchesByRepo(ctx context.Context, repoID int64) ([]Ba
 	return items, nil
 }
 
+const lockAdmission = `-- name: LockAdmission :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+func (q *Queries) LockAdmission(ctx context.Context, lockKey string) error {
+	_, err := q.db.Exec(ctx, lockAdmission, lockKey)
+	return err
+}
+
+const observeClearedIntent = `-- name: ObserveClearedIntent :exec
+UPDATE rejected_heads SET intent_cleared = TRUE
+WHERE repo_id = $1 AND pr_number = $2 AND head_sha = $3
+`
+
+type ObserveClearedIntentParams struct {
+	RepoID   int64  `json:"repo_id"`
+	PrNumber int64  `json:"pr_number"`
+	HeadSha  string `json:"head_sha"`
+}
+
+func (q *Queries) ObserveClearedIntent(ctx context.Context, arg ObserveClearedIntentParams) error {
+	_, err := q.db.Exec(ctx, observeClearedIntent, arg.RepoID, arg.PrNumber, arg.HeadSha)
+	return err
+}
+
 const pruneEvents = `-- name: PruneEvents :execrows
 DELETE FROM queue_events WHERE created_at < $1
 `
@@ -662,6 +733,30 @@ func (q *Queries) PruneEvents(ctx context.Context, createdAt pgtype.Timestamptz)
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const rejectHead = `-- name: RejectHead :exec
+INSERT INTO rejected_heads (repo_id, pr_number, head_sha, target_branch)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (repo_id, pr_number, head_sha, target_branch)
+DO UPDATE SET intent_cleared = FALSE
+`
+
+type RejectHeadParams struct {
+	RepoID       int64  `json:"repo_id"`
+	PrNumber     int64  `json:"pr_number"`
+	HeadSha      string `json:"head_sha"`
+	TargetBranch string `json:"target_branch"`
+}
+
+func (q *Queries) RejectHead(ctx context.Context, arg RejectHeadParams) error {
+	_, err := q.db.Exec(ctx, rejectHead,
+		arg.RepoID,
+		arg.PrNumber,
+		arg.HeadSha,
+		arg.TargetBranch,
+	)
+	return err
 }
 
 const saveBatch = `-- name: SaveBatch :one

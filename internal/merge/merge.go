@@ -41,6 +41,9 @@ func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner,
 
 	mergeSHA, conflict, err := f.CreateMergeBranch(ctx, owner, repo, entry.TargetBranch, entry.PrHeadSha, branchName)
 	if conflict {
+		if err := svc.RejectHead(ctx, entry); err != nil {
+			return nil, fmt.Errorf("record rejected head: %w", err)
+		}
 		slog.Info("merge conflict", "pr", entry.PrNumber)
 
 		logutil.WarnIfErr(forge.CancelMergeIntent(ctx, f, owner, repo, entry.PrNumber, mergeLabel), "cancel merge intent failed", "pr", entry.PrNumber)
@@ -61,6 +64,9 @@ func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner,
 	if err != nil {
 		// Non-conflict failure (e.g. unrelated histories) — surface to the
 		// user and remove rather than retry silently.
+		if rejectErr := svc.RejectHead(ctx, entry); rejectErr != nil {
+			return nil, fmt.Errorf("record rejected head: %w", rejectErr)
+		}
 		slog.Error("merge branch creation failed", "pr", entry.PrNumber, "error", err)
 
 		logutil.WarnIfErr(forge.CancelMergeIntent(ctx, f, owner, repo, entry.PrNumber, mergeLabel), "cancel merge intent failed", "pr", entry.PrNumber)

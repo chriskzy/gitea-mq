@@ -180,6 +180,27 @@ merge signal: an approved, non-draft PR with green CI enters the queue without
 anyone arming automerge or adding the label, and gitea-mq merges it when the
 queue passes. This costs one review lookup per open, unqueued PR per poll.
 
+Rejected heads are held in PostgreSQL after a merge conflict, merge error, or
+terminal check failure. Polling, webhook wakes, a service restart, and an old
+approval do not re-admit the same PR/head/target combination. This applies to
+approval, automerge, and merge-label admission and avoids repeated removal
+comments for an unchanged failure. Dependency and approval holds retain their
+existing automatic recovery behavior.
+
+Push a corrected head to recover normally. To retry the same head explicitly,
+first clear both automerge and the merge label and allow a poll to observe
+that cleared state, then schedule automerge or re-add the merge label. This
+observation is persisted, so a failed cancellation or an unchanged signal is
+not mistaken for a new request. Approval alone never resets the hold. A
+changed target-branch tip alone does not reset it either. All normal approval,
+dependency and CI checks still apply to a retry.
+
+Migration 008 adds the rejection table without altering live queue entries.
+Before rolling back to a binary that predates rejection holds, contain known
+failing PRs as drafts: the older binary does not enforce the new table. The
+down migration removes rejection history; it is not needed for a binary
+rollback.
+
 ## Issue dependencies (Gitea)
 
 Gitea refuses to merge a PR with an open dependency, but batches land by

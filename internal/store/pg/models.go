@@ -204,6 +204,14 @@ type QueueEvent struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
+type RejectedHead struct {
+	RepoID        int64  `json:"repo_id"`
+	PrNumber      int64  `json:"pr_number"`
+	HeadSha       string `json:"head_sha"`
+	TargetBranch  string `json:"target_branch"`
+	IntentCleared bool   `json:"intent_cleared"`
+}
+
 type Repo struct {
 	ID        int64              `json:"id"`
 	Owner     string             `json:"owner"`

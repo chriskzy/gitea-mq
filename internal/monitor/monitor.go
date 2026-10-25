@@ -236,6 +236,9 @@ func HandleTimeout(ctx context.Context, deps *Deps, entry *pg.QueueEntry) error 
 }
 
 func removeFromQueue(ctx context.Context, deps *Deps, entry *pg.QueueEntry, reason string, detail map[string]any, statusState pg.CheckState, statusDesc, comment string) error {
+	if err := deps.Queue.RejectHead(ctx, entry); err != nil {
+		return fmt.Errorf("record rejected head: %w", err)
+	}
 	targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
 	if err := deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{
 		State: statusState, Description: statusDesc, TargetURL: targetURL,

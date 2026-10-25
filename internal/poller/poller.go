@@ -221,6 +221,12 @@ func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 	openPRMap := make(map[int64]*forge.PR, len(openPRs))
 	for i := range openPRs {
 		openPRMap[openPRs[i].Number] = &openPRs[i]
+		pr := &openPRs[i]
+		if !pr.AutoMergeEnabled && !pr.HasLabel(deps.MergeLabel) {
+			if err := deps.Queue.ObserveClearedIntent(ctx, deps.RepoID, pr.Number, pr.HeadSHA); err != nil {
+				return nil, fmt.Errorf("observe cleared merge intent: %w", err)
+			}
+		}
 	}
 
 	enqueueAutoMergePRs(ctx, deps, result, openPRs)
@@ -403,12 +409,16 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 		return
 	}
 
-	enqResult, err := deps.Queue.Enqueue(ctx, deps.RepoID, pr.Number, pr.HeadSHA, targetBranch, deps.isPriority(pr))
+	explicit := source == "automerge detection" || source == "merge label"
+	enqResult, err := deps.Queue.EnqueueAutomatic(ctx, deps.RepoID, pr.Number, pr.HeadSHA, targetBranch, deps.isPriority(pr), explicit)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("enqueue PR #%d: %w", pr.Number, err))
 		return
 	}
 
+	if enqResult == nil {
+		return // Rejected at this head; preserve the failure status without retrying.
+	}
 	if enqResult.IsNew {
 		deps.Queue.RecordEvent(ctx, queue.Event{
 			RepoID:       deps.RepoID,
@@ -823,6 +833,10 @@ type timedOutRemoval struct {
 // removeTimedOut marks the entry's MQ status and queue error, then dequeues it
 // (cancelling automerge and advancing the queue).
 func removeTimedOut(ctx context.Context, deps *Deps, result *PollResult, entry *pg.QueueEntry, opts timedOutRemoval) {
+	if err := deps.Queue.RejectHead(ctx, entry); err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("record rejected head: %w", err))
+		return
+	}
 	targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
 	logutil.WarnIfErr(deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{
 		State: pg.CheckStateError, Description: opts.statusDescription, TargetURL: targetURL,
