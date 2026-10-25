@@ -658,8 +658,13 @@ func (e *Engine) eject(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, rea
 
 // ejectWith is eject with extra event detail (e.g. failure details).
 func (e *Engine) ejectWith(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, reason string, state pg.CheckState, statusDesc, comment string, extra map[string]any) error {
-	if err := e.Queue.RejectHead(ctx, ent); err != nil {
+	claimed, err := e.Queue.RejectHead(ctx, ent)
+	if err != nil {
 		return fmt.Errorf("record rejected head: %w", err)
+	}
+	if !claimed {
+		b.EjectedIds = append(b.EjectedIds, ent.ID)
+		return nil
 	}
 	logutil.WarnIfErr(e.Forge.SetMQStatus(ctx, e.Owner, e.Repo, ent.PrHeadSha, forge.MQStatus{
 		State: state, Description: statusDesc, TargetURL: e.prURL(ent.PrNumber),

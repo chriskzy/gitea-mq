@@ -121,7 +121,7 @@ type removeOpts struct {
 }
 
 func removePR(ctx context.Context, deps *Deps, result *PollResult, entry *pg.QueueEntry, opts removeOpts) error {
-	if err := deps.Queue.Dequeue(ctx, deps.RepoID, entry.PrNumber); err != nil {
+	if err := deps.Queue.DequeueEntry(ctx, entry.ID); err != nil {
 		return err
 	}
 	merge.SkipPendingMirroredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrHeadSha)
@@ -212,6 +212,10 @@ func prCheckResult(ctx context.Context, deps *Deps, pr *forge.PR, targetBranch s
 // PollOnce runs a single reconcile cycle for one repository.
 func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 	result := &PollResult{}
+	observedAt, err := deps.Queue.AdmissionObservationTime(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin admission observation: %w", err)
+	}
 
 	openPRs, err := deps.Forge.ListOpenPRs(ctx, deps.Owner, deps.Repo)
 	if err != nil {
@@ -223,7 +227,7 @@ func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 		openPRMap[openPRs[i].Number] = &openPRs[i]
 		pr := &openPRs[i]
 		if !pr.AutoMergeEnabled && !pr.HasLabel(deps.MergeLabel) {
-			if err := deps.Queue.ObserveClearedIntent(ctx, deps.RepoID, pr.Number, pr.HeadSHA); err != nil {
+			if err := deps.Queue.ObserveClearedIntent(ctx, deps.RepoID, pr.Number, pr.HeadSHA, observedAt); err != nil {
 				return nil, fmt.Errorf("observe cleared merge intent: %w", err)
 			}
 		}
@@ -833,8 +837,15 @@ type timedOutRemoval struct {
 // removeTimedOut marks the entry's MQ status and queue error, then dequeues it
 // (cancelling automerge and advancing the queue).
 func removeTimedOut(ctx context.Context, deps *Deps, result *PollResult, entry *pg.QueueEntry, opts timedOutRemoval) {
-	if err := deps.Queue.RejectHead(ctx, entry); err != nil {
+	claimed, err := deps.Queue.RejectHead(ctx, entry)
+	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("record rejected head: %w", err))
+		return
+	}
+	if !claimed {
+		if err := deps.Queue.DequeueEntry(ctx, entry.ID); err != nil {
+			result.Errors = append(result.Errors, err)
+		}
 		return
 	}
 	targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)

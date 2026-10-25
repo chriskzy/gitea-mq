@@ -7,22 +7,42 @@ import (
 
 	"github.com/Mic92/gitea-mq/internal/store/pg"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// RejectHead persists rejection before the entry is removed or the forge is notified.
-func (s *Service) RejectHead(ctx context.Context, entry *pg.QueueEntry) error {
-	return s.withTx(ctx, func(q *pg.Queries) error {
+// RejectHead persists rejection and claims notification for this queue attempt.
+// A repeated or stale handler must finish only its old entry, without notifying.
+func (s *Service) RejectHead(ctx context.Context, entry *pg.QueueEntry) (bool, error) {
+	claimed := false
+	err := s.withTx(ctx, func(q *pg.Queries) error {
 		if err := q.LockAdmission(ctx, fmt.Sprintf("%d:%d", entry.RepoID, entry.PrNumber)); err != nil {
 			return err
 		}
-		return q.RejectHead(ctx, pg.RejectHeadParams{RepoID: entry.RepoID, PrNumber: entry.PrNumber, HeadSha: entry.PrHeadSha, TargetBranch: entry.TargetBranch})
+		_, err := q.RejectHead(ctx, entry.ID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		claimed = err == nil
+		return err
 	})
+	return claimed, err
+}
+
+// DequeueEntry cannot remove a replacement attempt for the same PR.
+func (s *Service) DequeueEntry(ctx context.Context, id int64) error {
+	return s.queries().DeleteEntriesByIDs(ctx, []int64{id})
 }
 
 // ObserveClearedIntent records that the forge has actually cleared both explicit
 // merge signals. An old approval alone never releases a rejected head.
-func (s *Service) ObserveClearedIntent(ctx context.Context, repoID, number int64, head string) error {
-	return s.queries().ObserveClearedIntent(ctx, pg.ObserveClearedIntentParams{RepoID: repoID, PrNumber: number, HeadSha: head})
+func (s *Service) ObserveClearedIntent(ctx context.Context, repoID, number int64, head string, observedAt pgtype.Timestamptz) error {
+	return s.queries().ObserveClearedIntent(ctx, pg.ObserveClearedIntentParams{RepoID: repoID, PrNumber: number, HeadSha: head, ObservedAt: observedAt})
+}
+
+// AdmissionObservationTime binds a forge snapshot to the database clock, so a
+// poll begun before rejection cannot release it with stale cancellation data.
+func (s *Service) AdmissionObservationTime(ctx context.Context) (pgtype.Timestamptz, error) {
+	return s.queries().AdmissionObservationTime(ctx)
 }
 
 // EnqueueAutomatic returns nil for a rejected head until a new explicit merge

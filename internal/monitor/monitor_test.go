@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,51 @@ import (
 	"github.com/Mic92/gitea-mq/internal/store/pg"
 	"github.com/Mic92/gitea-mq/internal/testutil"
 )
+
+func TestOverlappingFailuresNotifyOnceAndDoNotDeleteReplacement(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupMonitorTest(t)
+	entry := testutil.EnqueueTesting(t, svc, repoID, 42, "sha42", "merge-sha")
+	entered, release := make(chan struct{}), make(chan struct{})
+	var comments atomic.Int32
+	mock.CreateCommentFn = func(context.Context, string, string, int64, string) error {
+		if comments.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	first := make(chan error, 1)
+	go func() { first <- monitor.HandleFailure(ctx, deps, entry, "ci/build", "") }()
+	<-entered
+	second := monitor.HandleFailure(ctx, deps, entry, "ci/build", "")
+	if second != nil {
+		close(release)
+		t.Fatal(second)
+	}
+	// A stale second handler may finish removal, but must not delete a new entry.
+	replacement, err := svc.Enqueue(ctx, repoID, 42, "fixed-head", "main", false)
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if comments.Load() != 1 {
+		t.Fatalf("duplicate removal notifications=%d", comments.Load())
+	}
+	got, err := svc.GetEntry(ctx, repoID, 42)
+	if err != nil || got == nil || got.ID != replacement.Entry.ID {
+		t.Fatalf("stale handler removed replacement: %+v %v", got, err)
+	}
+	if err := monitor.HandleFailure(ctx, deps, entry, "ci/build", ""); err != nil {
+		t.Fatal(err)
+	}
+	if comments.Load() != 1 {
+		t.Fatal("stale webhook posted another removal")
+	}
+}
 
 func setupMonitorTest(t *testing.T) (*monitor.Deps, *gitea.MockClient, *queue.Service, context.Context, int64) {
 	t.Helper()

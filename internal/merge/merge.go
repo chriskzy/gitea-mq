@@ -41,8 +41,12 @@ func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner,
 
 	mergeSHA, conflict, err := f.CreateMergeBranch(ctx, owner, repo, entry.TargetBranch, entry.PrHeadSha, branchName)
 	if conflict {
-		if err := svc.RejectHead(ctx, entry); err != nil {
-			return nil, fmt.Errorf("record rejected head: %w", err)
+		claimed, rejectErr := svc.RejectHead(ctx, entry)
+		if rejectErr != nil {
+			return nil, fmt.Errorf("record rejected head: %w", rejectErr)
+		}
+		if !claimed {
+			return &StartTestingResult{Removed: true}, svc.DequeueEntry(ctx, entry.ID)
 		}
 		slog.Info("merge conflict", "pr", entry.PrNumber)
 
@@ -54,7 +58,7 @@ func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner,
 			"❌ Removed from merge queue: merge conflict with target branch. Please rebase and re-schedule the merge."),
 			"post comment failed", "pr", entry.PrNumber)
 
-		if err := svc.Dequeue(ctx, repoID, entry.PrNumber); err != nil {
+		if err := svc.DequeueEntry(ctx, entry.ID); err != nil {
 			return nil, fmt.Errorf("dequeue conflicting PR #%d: %w", entry.PrNumber, err)
 		}
 		svc.RecordEvent(ctx, ejectEvent(repoID, entry, "merge_conflict", nil))
@@ -64,8 +68,12 @@ func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner,
 	if err != nil {
 		// Non-conflict failure (e.g. unrelated histories) — surface to the
 		// user and remove rather than retry silently.
-		if rejectErr := svc.RejectHead(ctx, entry); rejectErr != nil {
+		claimed, rejectErr := svc.RejectHead(ctx, entry)
+		if rejectErr != nil {
 			return nil, fmt.Errorf("record rejected head: %w", rejectErr)
+		}
+		if !claimed {
+			return &StartTestingResult{Removed: true}, svc.DequeueEntry(ctx, entry.ID)
 		}
 		slog.Error("merge branch creation failed", "pr", entry.PrNumber, "error", err)
 
@@ -77,7 +85,7 @@ func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner,
 			fmt.Sprintf("❌ Removed from merge queue: failed to create merge branch.\n\n```\n%v\n```", err)),
 			"post comment failed", "pr", entry.PrNumber)
 
-		if err := svc.Dequeue(ctx, repoID, entry.PrNumber); err != nil {
+		if err := svc.DequeueEntry(ctx, entry.ID); err != nil {
 			return nil, fmt.Errorf("dequeue PR #%d after merge error: %w", entry.PrNumber, err)
 		}
 		svc.RecordEvent(ctx, ejectEvent(repoID, entry, "merge_error", map[string]any{"error": err.Error()}))

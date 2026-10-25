@@ -88,7 +88,7 @@ func (s *Service) enqueue(ctx context.Context, q *pg.Queries, repoID, prNumber i
 		return nil, fmt.Errorf("enqueue PR #%d: %w", prNumber, err)
 	}
 
-	pos, err := s.Position(ctx, repoID, entry.TargetBranch, prNumber)
+	pos, err := q.CountQueuePosition(ctx, pg.CountQueuePositionParams{RepoID: repoID, TargetBranch: entry.TargetBranch, PrNumber: prNumber})
 	if err != nil {
 		return nil, fmt.Errorf("count position for PR #%d: %w", prNumber, err)
 	}

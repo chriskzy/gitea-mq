@@ -79,8 +79,8 @@ func TestMigration008_PreservesLiveQueueAndCanRollback(t *testing.T) {
 	if err := pg.MigrateTo(pool, 8); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO rejected_heads(repo_id,pr_number,head_sha,target_branch)
-	 SELECT id,43,'rejected','main' FROM repos`); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO rejected_heads(repo_id,pr_number,head_sha,target_branch,entry_id)
+	 SELECT id,43,'rejected','main',100 FROM repos`); err != nil {
 		t.Fatal(err)
 	}
 	if err := pg.MigrateTo(pool, 7); err != nil {

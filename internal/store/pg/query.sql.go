@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const admissionObservationTime = `-- name: AdmissionObservationTime :one
+SELECT clock_timestamp()::timestamptz AS observed_at
+`
+
+func (q *Queries) AdmissionObservationTime(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, admissionObservationTime)
+	var observed_at pgtype.Timestamptz
+	err := row.Scan(&observed_at)
+	return observed_at, err
+}
+
 const cancelBatchesByRepo = `-- name: CancelBatchesByRepo :exec
 UPDATE batches SET state = 'cancelled'
 WHERE id IN (SELECT l.id FROM batches l WHERE l.repo_id = $1 AND l.state IN ('forming', 'testing') ORDER BY l.id FOR UPDATE)
@@ -710,16 +721,23 @@ func (q *Queries) LockAdmission(ctx context.Context, lockKey string) error {
 const observeClearedIntent = `-- name: ObserveClearedIntent :exec
 UPDATE rejected_heads SET intent_cleared = TRUE
 WHERE repo_id = $1 AND pr_number = $2 AND head_sha = $3
+  AND rejected_at <= $4
 `
 
 type ObserveClearedIntentParams struct {
-	RepoID   int64  `json:"repo_id"`
-	PrNumber int64  `json:"pr_number"`
-	HeadSha  string `json:"head_sha"`
+	RepoID     int64              `json:"repo_id"`
+	PrNumber   int64              `json:"pr_number"`
+	HeadSha    string             `json:"head_sha"`
+	ObservedAt pgtype.Timestamptz `json:"observed_at"`
 }
 
 func (q *Queries) ObserveClearedIntent(ctx context.Context, arg ObserveClearedIntentParams) error {
-	_, err := q.db.Exec(ctx, observeClearedIntent, arg.RepoID, arg.PrNumber, arg.HeadSha)
+	_, err := q.db.Exec(ctx, observeClearedIntent,
+		arg.RepoID,
+		arg.PrNumber,
+		arg.HeadSha,
+		arg.ObservedAt,
+	)
 	return err
 }
 
@@ -735,28 +753,21 @@ func (q *Queries) PruneEvents(ctx context.Context, createdAt pgtype.Timestamptz)
 	return result.RowsAffected(), nil
 }
 
-const rejectHead = `-- name: RejectHead :exec
-INSERT INTO rejected_heads (repo_id, pr_number, head_sha, target_branch)
-VALUES ($1, $2, $3, $4)
+const rejectHead = `-- name: RejectHead :one
+INSERT INTO rejected_heads (repo_id, pr_number, head_sha, target_branch, entry_id)
+SELECT repo_id, pr_number, pr_head_sha, target_branch, id
+FROM queue_entries WHERE id = $1
 ON CONFLICT (repo_id, pr_number, head_sha, target_branch)
-DO UPDATE SET intent_cleared = FALSE
+DO UPDATE SET intent_cleared = FALSE, entry_id = EXCLUDED.entry_id, rejected_at = clock_timestamp()
+WHERE rejected_heads.entry_id <> EXCLUDED.entry_id
+RETURNING entry_id
 `
 
-type RejectHeadParams struct {
-	RepoID       int64  `json:"repo_id"`
-	PrNumber     int64  `json:"pr_number"`
-	HeadSha      string `json:"head_sha"`
-	TargetBranch string `json:"target_branch"`
-}
-
-func (q *Queries) RejectHead(ctx context.Context, arg RejectHeadParams) error {
-	_, err := q.db.Exec(ctx, rejectHead,
-		arg.RepoID,
-		arg.PrNumber,
-		arg.HeadSha,
-		arg.TargetBranch,
-	)
-	return err
+func (q *Queries) RejectHead(ctx context.Context, entryID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, rejectHead, entryID)
+	var entry_id int64
+	err := row.Scan(&entry_id)
+	return entry_id, err
 }
 
 const saveBatch = `-- name: SaveBatch :one

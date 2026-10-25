@@ -195,6 +195,12 @@ not mistaken for a new request. Approval alone never resets the hold. A
 changed target-branch tip alone does not reset it either. All normal approval,
 dependency and CI checks still apply to a retry.
 
+Removal notification is claimed once per queue attempt before forge calls, so
+overlapping failure handlers cannot duplicate it or delete a replacement
+attempt. Delivery is best effort: a process crash or failed forge request can
+lose that notification; rejection remains durable and must be inspected rather
+than retrying the source automatically.
+
 Migration 008 adds the rejection table without altering live queue entries.
 Before rolling back to a binary that predates rejection holds, contain known
 failing PRs as drafts: the older binary does not enforce the new table. The

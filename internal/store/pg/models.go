@@ -205,11 +205,13 @@ type QueueEvent struct {
 }
 
 type RejectedHead struct {
-	RepoID        int64  `json:"repo_id"`
-	PrNumber      int64  `json:"pr_number"`
-	HeadSha       string `json:"head_sha"`
-	TargetBranch  string `json:"target_branch"`
-	IntentCleared bool   `json:"intent_cleared"`
+	RepoID        int64              `json:"repo_id"`
+	PrNumber      int64              `json:"pr_number"`
+	HeadSha       string             `json:"head_sha"`
+	TargetBranch  string             `json:"target_branch"`
+	EntryID       int64              `json:"entry_id"`
+	RejectedAt    pgtype.Timestamptz `json:"rejected_at"`
+	IntentCleared bool               `json:"intent_cleared"`
 }
 
 type Repo struct {

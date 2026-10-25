@@ -236,8 +236,12 @@ func HandleTimeout(ctx context.Context, deps *Deps, entry *pg.QueueEntry) error 
 }
 
 func removeFromQueue(ctx context.Context, deps *Deps, entry *pg.QueueEntry, reason string, detail map[string]any, statusState pg.CheckState, statusDesc, comment string) error {
-	if err := deps.Queue.RejectHead(ctx, entry); err != nil {
+	claimed, err := deps.Queue.RejectHead(ctx, entry)
+	if err != nil {
 		return fmt.Errorf("record rejected head: %w", err)
+	}
+	if !claimed {
+		return deps.Queue.DequeueEntry(ctx, entry.ID)
 	}
 	targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
 	if err := deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{
@@ -256,7 +260,7 @@ func removeFromQueue(ctx context.Context, deps *Deps, entry *pg.QueueEntry, reas
 
 	merge.CleanupMergeBranch(ctx, deps.Forge, deps.Owner, deps.Repo, entry)
 
-	if err := deps.Queue.Dequeue(ctx, deps.RepoID, entry.PrNumber); err != nil {
+	if err := deps.Queue.DequeueEntry(ctx, entry.ID); err != nil {
 		return err
 	}
 	merge.SkipPendingMirroredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrHeadSha)
