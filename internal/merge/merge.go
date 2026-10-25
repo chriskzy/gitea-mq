@@ -36,6 +36,9 @@ type StartTestingResult struct {
 // transitions it to the "testing" state. If the merge conflicts, the PR
 // is removed from the queue with automerge cancelled and a comment posted.
 func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner, repo string, repoID int64, entry *pg.QueueEntry, externalURL, mergeLabel string) (*StartTestingResult, error) {
+	if recovered, err := RecoverRejected(ctx, f, svc, owner, repo, entry, externalURL, mergeLabel); err != nil || recovered {
+		return &StartTestingResult{Removed: recovered}, err
+	}
 	branchName := BranchName(entry.PrNumber)
 	targetURL := forge.DashboardPRURL(externalURL, f.Kind(), owner, repo, entry.PrNumber)
 
@@ -190,4 +193,20 @@ func CleanupStaleBranches(ctx context.Context, f forge.Forge, svc *queue.Service
 	slog.Info("startup merge branch cleanup", "owner", owner, "repo", repo,
 		"active_branches", len(activeBranches), "stale_deleted", deleted)
 	return nil
+}
+
+// RecoverRejected finishes an interrupted terminal removal before testing or
+// success can resume. The persisted claim prevents a second notification.
+func RecoverRejected(ctx context.Context, f forge.Forge, svc *queue.Service, owner, repo string, entry *pg.QueueEntry, externalURL, mergeLabel string) (bool, error) {
+	rejected, err := svc.IsRejectedAttempt(ctx, entry.ID)
+	if err != nil || !rejected {
+		return false, err
+	}
+	_, err = svc.RejectHead(ctx, entry, true, func(bool) {
+		logutil.WarnIfErr(f.SetMQStatus(ctx, owner, repo, entry.PrHeadSha, forge.MQStatus{State: pg.CheckStateFailure, Description: "Previous queue attempt was rejected", TargetURL: forge.DashboardPRURL(externalURL, f.Kind(), owner, repo, entry.PrNumber)}), "restore rejected status failed", "pr", entry.PrNumber)
+		logutil.WarnIfErr(forge.CancelMergeIntent(ctx, f, owner, repo, entry.PrNumber, mergeLabel), "cancel rejected intent failed", "pr", entry.PrNumber)
+		CleanupMergeBranch(ctx, f, owner, repo, entry)
+		SkipPendingMirroredChecks(ctx, f, owner, repo, entry.PrHeadSha)
+	})
+	return true, err
 }

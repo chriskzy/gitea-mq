@@ -108,3 +108,8 @@ func (s *Service) EnqueueAutomatic(ctx context.Context, repoID, number int64, he
 	})
 	return result, err
 }
+
+// IsRejectedAttempt identifies interrupted cleanup by immutable entry ID.
+func (s *Service) IsRejectedAttempt(ctx context.Context, entryID int64) (bool, error) {
+	return s.queries().IsRejectedAttempt(ctx, entryID)
+}

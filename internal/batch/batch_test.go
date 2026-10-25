@@ -677,3 +677,79 @@ func TestHandlePass_HoldsUnapproved(t *testing.T) {
 		t.Fatalf("expected rebuild with #10 only: current=%v builds=%d", b.CurrentIds, b.Builds)
 	}
 }
+
+func TestRestartCannotResumeRejectedBatchMember(t *testing.T) {
+	for _, wasTesting := range []bool{false, true} {
+		t.Run(fmt.Sprint("testing=", wasTesting), func(t *testing.T) {
+			e, f, svc, ctx := setup(t, 10)
+			b, err := svc.FormBatch(ctx, e.RepoID, "main", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wasTesting {
+				if err := e.Build(ctx, b); err != nil {
+					t.Fatal(err)
+				}
+			}
+			entry, err := svc.GetEntry(ctx, e.RepoID, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Simulate process loss after rejection commits but before cleanup/save.
+			if _, err := svc.RejectHead(ctx, entry, false, nil); err != nil {
+				t.Fatal(err)
+			}
+			f.target = "main-after-conflict-disappeared"
+			if err := e.ReconcileLive(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if wasTesting {
+				if err := e.HandlePass(ctx, mustLive(t, svc, ctx, e.RepoID)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if f.target != "main-after-conflict-disappeared" {
+				t.Fatalf("rejected head landed: %s", f.target)
+			}
+			remaining, err := svc.GetEntry(ctx, e.RepoID, 10)
+			if err != nil || remaining != nil {
+				t.Fatalf("rejected entry survived: %+v %v", remaining, err)
+			}
+			if len(f.CallsTo("Comment")) != 0 {
+				t.Fatal("recovery repeated removal comment")
+			}
+		})
+	}
+}
+
+func TestRejectedMemberRebuildsSurvivorsBeforeLanding(t *testing.T) {
+	e, f, svc, ctx := setup(t, 10, 20)
+	b, err := e.FormAndBuild(ctx, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := svc.GetEntry(ctx, e.RepoID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RejectHead(ctx, entry, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.HandlePass(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if f.target != "main0" {
+		t.Fatalf("old batch landed: %s", f.target)
+	}
+	live := mustLive(t, svc, ctx, e.RepoID)
+	if len(live.CurrentIds) != 1 || strings.Contains(live.BranchSha.String, "sha10") {
+		t.Fatalf("rejected member survived rebuild: %+v", live)
+	}
+	f.merged[20] = true
+	if err := e.HandlePass(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f.target, "sha10") || !strings.Contains(f.target, "sha20") {
+		t.Fatalf("wrong members landed: %s", f.target)
+	}
+}

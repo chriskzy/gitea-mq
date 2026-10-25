@@ -329,3 +329,29 @@ func TestCleanupStaleBranches_DeleteErrorContinues(t *testing.T) {
 		t.Fatalf("expected 2 delete attempts, got %d", callCount)
 	}
 }
+
+// Recovery must honor the durable rejection even if the conflict disappeared.
+func TestStartTestingRecoversInterruptedRejection(t *testing.T) {
+	mock, f, svc, ctx, repoID := setup(t)
+	admitted, err := svc.Enqueue(ctx, repoID, 42, "prsha", "main", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.RejectHead(ctx, &admitted.Entry, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	mock.MergeBranchesFn = func(_ context.Context, _, _, _, _, _ string) (*gitea.MergeResult, error) {
+		return &gitea.MergeResult{SHA: "now-conflict-free"}, nil
+	}
+	result, err := merge.StartTesting(ctx, f, svc, "org", "app", repoID, &admitted.Entry, "https://mq.example.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := svc.GetEntry(ctx, repoID, 42)
+	if err != nil || remaining != nil || !result.Removed {
+		t.Fatalf("rejected attempt resumed: result=%+v entry=%+v err=%v", result, remaining, err)
+	}
+	if len(mock.CallsTo("CreateComment")) != 0 {
+		t.Fatal("recovery must not repeat notification")
+	}
+}

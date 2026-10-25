@@ -510,3 +510,26 @@ func TestInfraRetry_NoMatchEjects(t *testing.T) {
 		t.Fatalf("not ejected (%d comments)", n)
 	}
 }
+
+func TestSuccessCannotResumeRejectedAttempt(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupMonitorTest(t)
+	entry := testutil.EnqueueTesting(t, svc, repoID, 42, "sha42", "merge-sha")
+	if _, err := svc.RejectHead(ctx, entry, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitor.HandleSuccess(ctx, deps, entry); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := svc.GetEntry(ctx, repoID, 42)
+	if err != nil || remaining != nil {
+		t.Fatalf("rejected entry survived: %+v %v", remaining, err)
+	}
+	for _, call := range mock.CallsTo("CreateCommitStatus") {
+		if call.Args[3].(gitea.CommitStatus).State == "success" {
+			t.Fatal("rejected attempt received success")
+		}
+	}
+	if len(mock.CallsTo("CreateComment")) != 0 {
+		t.Fatal("recovery repeated notification")
+	}
+}

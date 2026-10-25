@@ -918,6 +918,15 @@ func startQueuedHeads(ctx context.Context, deps *Deps, result *PollResult) {
 // Compare errors fall through to StartTesting so a flaky API never stalls
 // the queue.
 func tryFastForwardSuccess(ctx context.Context, deps *Deps, result *PollResult, head *pg.QueueEntry) bool {
+	if recovered, err := merge.RecoverRejected(ctx, deps.Forge, deps.Queue, deps.Owner, deps.Repo, head, deps.ExternalURL, deps.MergeLabel); err != nil || recovered {
+		if err != nil {
+			result.Errors = append(result.Errors, err)
+		} else {
+			result.Dequeued = append(result.Dequeued, head.PrNumber)
+		}
+		return true
+	}
+
 	upToDate, err := deps.Forge.IsUpToDate(ctx, deps.Owner, deps.Repo, head.TargetBranch, head.PrHeadSha)
 	if err != nil {
 		slog.Warn("up-to-date check failed, falling back to merge branch", "pr", head.PrNumber, "error", err)

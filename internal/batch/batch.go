@@ -180,6 +180,14 @@ func (e *Engine) Build(ctx context.Context, b *pg.Batch) error {
 		return fmt.Errorf("load batch members: %w", err)
 	}
 
+	entries, _, err = e.recoverRejected(ctx, b, entries)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		b.CurrentIds = nil
+		return e.next(ctx, b)
+	}
 	heads := make([]string, len(entries))
 	for i := range entries {
 		heads[i] = entries[i].PrHeadSha
@@ -304,6 +312,17 @@ func (e *Engine) HandlePass(ctx context.Context, b *pg.Batch) error {
 	entries, err := e.Queue.GetEntriesByIDs(ctx, b.CurrentIds)
 	if err != nil {
 		return err
+	}
+	var recovered bool
+	entries, recovered, err = e.recoverRejected(ctx, b, entries)
+	if err != nil {
+		return err
+	}
+	if recovered {
+		if len(b.CurrentIds) == 0 {
+			return e.next(ctx, b)
+		}
+		return e.rebuild(ctx, b)
 	}
 	// The fast-forward below skips the forge's dependency and approval
 	// checks.
@@ -902,4 +921,28 @@ func (e *Engine) retryBuild(ctx context.Context, b *pg.Batch) bool {
 		Detail: map[string]any{"pattern": pattern, "checks": rerun, "attempt": b.InfraRetries, "sha": sha, "build": b.Builds},
 	})
 	return true
+}
+
+// A crash after the durable rejection but before SaveBatch must not make that
+// member eligible again when the target moves or old CI turns green.
+func (e *Engine) recoverRejected(ctx context.Context, b *pg.Batch, entries []pg.QueueEntry) ([]pg.QueueEntry, bool, error) {
+	survivors := make([]pg.QueueEntry, 0, len(entries))
+	recovered := false
+	for i := range entries {
+		ent := &entries[i]
+		rejected, err := e.Queue.IsRejectedAttempt(ctx, ent.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		if !rejected {
+			survivors = append(survivors, *ent)
+			continue
+		}
+		if err := e.eject(ctx, b, ent, "interrupted_rejection", pg.CheckStateFailure, "Previous queue attempt was rejected", ""); err != nil {
+			return nil, false, err
+		}
+		recovered = true
+	}
+	b.CurrentIds = ids(survivors)
+	return survivors, recovered, nil
 }

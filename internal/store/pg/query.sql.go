@@ -546,6 +546,17 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Inser
 	return i, err
 }
 
+const isRejectedAttempt = `-- name: IsRejectedAttempt :one
+SELECT EXISTS (SELECT 1 FROM rejected_heads WHERE entry_id = $1)
+`
+
+func (q *Queries) IsRejectedAttempt(ctx context.Context, entryID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, isRejectedAttempt, entryID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listActiveEntriesByRepo = `-- name: ListActiveEntriesByRepo :many
 
 SELECT id, repo_id, pr_number, pr_head_sha, target_branch, state, enqueued_at, testing_started_at, completed_at, merge_branch_name, merge_branch_sha, error_message, active_batch_id, priority, infra_retries FROM queue_entries

@@ -221,3 +221,6 @@ DELETE FROM queue_events WHERE created_at < $1;
 UPDATE queue_entries SET infra_retries = infra_retries + 1
 WHERE id = $1
 RETURNING infra_retries;
+
+-- name: IsRejectedAttempt :one
+SELECT EXISTS (SELECT 1 FROM rejected_heads WHERE entry_id = $1);
