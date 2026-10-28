@@ -58,7 +58,10 @@ func (s *Service) withTx(ctx context.Context, fn func(q *pg.Queries) error) erro
 // Enqueue adds a PR to its repo+branch queue, ahead of normal PRs if priority.
 // If the PR is already queued, it is a no-op and returns the existing entry.
 func (s *Service) Enqueue(ctx context.Context, repoID, prNumber int64, prHeadSHA, targetBranch string, priority bool) (*EnqueueResult, error) {
-	q := s.queries()
+	return s.enqueue(ctx, s.queries(), repoID, prNumber, prHeadSHA, targetBranch, priority)
+}
+
+func (s *Service) enqueue(ctx context.Context, q *pg.Queries, repoID, prNumber int64, prHeadSHA, targetBranch string, priority bool) (*EnqueueResult, error) {
 	var (
 		entry pg.QueueEntry
 		isNew bool
@@ -85,7 +88,7 @@ func (s *Service) Enqueue(ctx context.Context, repoID, prNumber int64, prHeadSHA
 		return nil, fmt.Errorf("enqueue PR #%d: %w", prNumber, err)
 	}
 
-	pos, err := s.Position(ctx, repoID, entry.TargetBranch, prNumber)
+	pos, err := q.CountQueuePosition(ctx, pg.CountQueuePositionParams{RepoID: repoID, TargetBranch: entry.TargetBranch, PrNumber: prNumber})
 	if err != nil {
 		return nil, fmt.Errorf("count position for PR #%d: %w", prNumber, err)
 	}
@@ -174,7 +177,10 @@ func (s *Service) GetEntry(ctx context.Context, repoID, prNumber int64) (*pg.Que
 		PrNumber: prNumber,
 	})
 	if err != nil {
-		return nil, nil //nolint:nilerr // not-found is not an error
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
 	}
 
 	return &entry, nil

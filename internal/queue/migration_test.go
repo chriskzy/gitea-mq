@@ -64,3 +64,33 @@ func TestMigration005_PriorityAndPurge(t *testing.T) {
 		t.Fatalf("got PR #%d priority=%v, want only PR #1 with priority=false", n, priority)
 	}
 }
+
+func TestMigration008_PreservesLiveQueueAndCanRollback(t *testing.T) {
+	pool := testutil.NewRawTestDB(t, testutil.Server())
+	ctx := t.Context()
+	if err := pg.MigrateTo(pool, 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO repos (owner,name) VALUES ('org','app');
+	 INSERT INTO queue_entries(repo_id,pr_number,pr_head_sha,target_branch)
+	 SELECT id,42,'head','main' FROM repos`); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.MigrateTo(pool, 8); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO rejected_heads(repo_id,pr_number,head_sha,target_branch,entry_id)
+	 SELECT id,43,'rejected','main',100 FROM repos`); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.MigrateTo(pool, 7); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM queue_entries WHERE pr_number=42 AND pr_head_sha='head'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("live queue changed: count=%d err=%v", count, err)
+	}
+	if err := pg.MigrateTo(pool, 8); err != nil {
+		t.Fatal(err)
+	}
+}

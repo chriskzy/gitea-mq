@@ -121,7 +121,7 @@ type removeOpts struct {
 }
 
 func removePR(ctx context.Context, deps *Deps, result *PollResult, entry *pg.QueueEntry, opts removeOpts) error {
-	if err := deps.Queue.Dequeue(ctx, deps.RepoID, entry.PrNumber); err != nil {
+	if err := deps.Queue.DequeueEntry(ctx, entry.ID); err != nil {
 		return err
 	}
 	merge.SkipPendingMirroredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrHeadSha)
@@ -138,6 +138,11 @@ func removePR(ctx context.Context, deps *Deps, result *PollResult, entry *pg.Que
 		merge.CleanupMergeBranch(ctx, deps.Forge, deps.Owner, deps.Repo, entry)
 	}
 
+	recordRemoval(ctx, deps, result, entry, opts)
+	return nil
+}
+
+func recordRemoval(ctx context.Context, deps *Deps, result *PollResult, entry *pg.QueueEntry, opts removeOpts) {
 	deps.Queue.RecordEvent(ctx, queue.Event{
 		RepoID:       deps.RepoID,
 		Kind:         removalEventKind(opts.reason),
@@ -154,7 +159,6 @@ func removePR(ctx context.Context, deps *Deps, result *PollResult, entry *pg.Que
 	}
 
 	slog.Info(opts.logMsg, append([]any{"pr", entry.PrNumber}, opts.logAttrs...)...)
-	return nil
 }
 
 // removalEventKind distinguishes a PR leaving on its own (merged, closed,
@@ -212,6 +216,29 @@ func prCheckResult(ctx context.Context, deps *Deps, pr *forge.PR, targetBranch s
 // PollOnce runs a single reconcile cycle for one repository.
 func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 	result := &PollResult{}
+	// Recover every non-batch state before forge observation or admission. In
+	// particular, an interrupted success timeout must not reach MergePR below.
+	active, err := deps.Queue.ListActiveEntries(ctx, deps.RepoID)
+	if err != nil {
+		return nil, fmt.Errorf("list interrupted attempts: %w", err)
+	}
+	for i := range active {
+		entry := &active[i]
+		if entry.ActiveBatchID.Valid {
+			continue
+		} // batch consumption prunes before rebuild/landing
+		recovered, err := merge.RecoverRejected(ctx, deps.Forge, deps.Queue, deps.Owner, deps.Repo, entry, deps.ExternalURL, deps.MergeLabel)
+		if err != nil {
+			return nil, fmt.Errorf("recover rejected PR #%d: %w", entry.PrNumber, err)
+		}
+		if recovered {
+			result.Dequeued = append(result.Dequeued, entry.PrNumber)
+		}
+	}
+	observedAt, err := deps.Queue.AdmissionObservationTime(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin admission observation: %w", err)
+	}
 
 	openPRs, err := deps.Forge.ListOpenPRs(ctx, deps.Owner, deps.Repo)
 	if err != nil {
@@ -221,6 +248,12 @@ func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 	openPRMap := make(map[int64]*forge.PR, len(openPRs))
 	for i := range openPRs {
 		openPRMap[openPRs[i].Number] = &openPRs[i]
+		pr := &openPRs[i]
+		if !pr.AutoMergeEnabled && !pr.HasLabel(deps.MergeLabel) {
+			if err := deps.Queue.ObserveClearedIntent(ctx, deps.RepoID, pr.Number, pr.HeadSHA, observedAt); err != nil {
+				return nil, fmt.Errorf("observe cleared merge intent: %w", err)
+			}
+		}
 	}
 
 	enqueueAutoMergePRs(ctx, deps, result, openPRs)
@@ -403,12 +436,16 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 		return
 	}
 
-	enqResult, err := deps.Queue.Enqueue(ctx, deps.RepoID, pr.Number, pr.HeadSHA, targetBranch, deps.isPriority(pr))
+	explicit := source == "automerge detection" || source == "merge label"
+	enqResult, err := deps.Queue.EnqueueAutomatic(ctx, deps.RepoID, pr.Number, pr.HeadSHA, targetBranch, deps.isPriority(pr), explicit)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("enqueue PR #%d: %w", pr.Number, err))
 		return
 	}
 
+	if enqResult == nil {
+		return // Rejected at this head; preserve the failure status without retrying.
+	}
 	if enqResult.IsNew {
 		deps.Queue.RecordEvent(ctx, queue.Event{
 			RepoID:       deps.RepoID,
@@ -775,7 +812,6 @@ func handleSuccessTimeout(ctx context.Context, deps *Deps, result *PollResult, e
 	removeTimedOut(ctx, deps, result, entry, timedOutRemoval{
 		reason:            "success_timeout",
 		statusDescription: "Merge did not complete in time",
-		errorMessage:      "merge did not complete in time",
 		comment:           "⚠️ Removed from merge queue: PR was marked as ready to merge but the forge did not merge it in time. This may indicate a branch protection issue.",
 		logMsg:            "removed PR due to success-but-not-merged timeout",
 	})
@@ -799,7 +835,6 @@ func handleTestingTimeout(ctx context.Context, deps *Deps, result *PollResult, e
 	removeTimedOut(ctx, deps, result, entry, timedOutRemoval{
 		reason:            "testing_timeout",
 		statusDescription: "CI did not report within timeout",
-		errorMessage:      "CI did not report within timeout",
 		comment:           "⚠️ Removed from merge queue: CI did not report a status within the timeout. The CI server may have lost the build.",
 		logMsg:            "removed PR due to testing timeout",
 	})
@@ -815,7 +850,6 @@ func timedOut(now time.Time, ts pgtype.Timestamptz, timeout time.Duration) bool 
 type timedOutRemoval struct {
 	reason            string // queue event reason
 	statusDescription string // MQ commit status shown on the PR head
-	errorMessage      string // stored on the queue entry
 	comment           string // posted on the PR
 	logMsg            string
 }
@@ -823,20 +857,26 @@ type timedOutRemoval struct {
 // removeTimedOut marks the entry's MQ status and queue error, then dequeues it
 // (cancelling automerge and advancing the queue).
 func removeTimedOut(ctx context.Context, deps *Deps, result *PollResult, entry *pg.QueueEntry, opts timedOutRemoval) {
-	targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
-	logutil.WarnIfErr(deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{
-		State: pg.CheckStateError, Description: opts.statusDescription, TargetURL: targetURL,
-	}), "set mq status failed", "pr", entry.PrNumber)
-	logutil.WarnIfErr(deps.Queue.SetError(ctx, deps.RepoID, entry.PrNumber, opts.errorMessage), "set queue error failed", "pr", entry.PrNumber)
-
-	if err := removePR(ctx, deps, result, entry, removeOpts{
-		reason:       opts.reason,
-		cancelIntent: true,
-		comment:      opts.comment,
-		advance:      true,
-		logMsg:       opts.logMsg,
-	}); err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("dequeue timed-out PR #%d: %w", entry.PrNumber, err))
+	claimed, err := deps.Queue.RejectHead(ctx, entry, true, func(notify bool) {
+		targetURL := forge.DashboardPRURL(deps.ExternalURL, deps.Forge.Kind(), deps.Owner, deps.Repo, entry.PrNumber)
+		logutil.WarnIfErr(deps.Forge.SetMQStatus(ctx, deps.Owner, deps.Repo, entry.PrHeadSha, forge.MQStatus{
+			State: pg.CheckStateError, Description: opts.statusDescription, TargetURL: targetURL,
+		}), "set mq status failed", "pr", entry.PrNumber)
+		merge.SkipPendingMirroredChecks(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrHeadSha)
+		logutil.WarnIfErr(forge.CancelMergeIntent(ctx, deps.Forge, deps.Owner, deps.Repo, entry.PrNumber, deps.MergeLabel), "cancel merge intent failed", "pr", entry.PrNumber)
+		if notify {
+			logutil.WarnIfErr(deps.Forge.Comment(ctx, deps.Owner, deps.Repo, entry.PrNumber, opts.comment), "post comment failed", "pr", entry.PrNumber)
+		}
+		if !entry.ActiveBatchID.Valid {
+			merge.CleanupMergeBranch(ctx, deps.Forge, deps.Owner, deps.Repo, entry)
+		}
+	})
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("reject timed-out attempt: %w", err))
+		return
+	}
+	if claimed {
+		recordRemoval(ctx, deps, result, entry, removeOpts{reason: opts.reason, advance: true, logMsg: opts.logMsg})
 	}
 }
 
@@ -897,6 +937,15 @@ func startQueuedHeads(ctx context.Context, deps *Deps, result *PollResult) {
 // Compare errors fall through to StartTesting so a flaky API never stalls
 // the queue.
 func tryFastForwardSuccess(ctx context.Context, deps *Deps, result *PollResult, head *pg.QueueEntry) bool {
+	if recovered, err := merge.RecoverRejected(ctx, deps.Forge, deps.Queue, deps.Owner, deps.Repo, head, deps.ExternalURL, deps.MergeLabel); err != nil || recovered {
+		if err != nil {
+			result.Errors = append(result.Errors, err)
+		} else {
+			result.Dequeued = append(result.Dequeued, head.PrNumber)
+		}
+		return true
+	}
+
 	upToDate, err := deps.Forge.IsUpToDate(ctx, deps.Owner, deps.Repo, head.TargetBranch, head.PrHeadSha)
 	if err != nil {
 		slog.Warn("up-to-date check failed, falling back to merge branch", "pr", head.PrNumber, "error", err)

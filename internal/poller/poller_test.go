@@ -1033,3 +1033,71 @@ func TestPollOnce_ReviewConflictAtHead(t *testing.T) {
 		t.Fatalf("re-approved PR not enqueued: %+v", result)
 	}
 }
+
+func TestPollOnceCannotFastTrackInterruptedRejection(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	deps.SkipQueueIfUpToDate = true
+	mockAutomergePRs(mock, makePR(42, "sha42", "main"))
+	mock.CompareCommitsFn = func(context.Context, string, string, string, string) (*gitea.Compare, error) {
+		return &gitea.Compare{TotalCommits: 0}, nil
+	}
+	entry, err := svc.Enqueue(ctx, repoID, 42, "sha42", "main", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RejectHead(ctx, &entry.Entry, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		result, err := poller.PollOnce(ctx, deps)
+		if err != nil || len(result.Errors) != 0 {
+			t.Fatalf("poll failed: %+v %v", result, err)
+		}
+	}
+	remaining, err := svc.GetEntry(ctx, repoID, 42)
+	if err != nil || remaining != nil {
+		t.Fatalf("rejected attempt resumed: %+v %v", remaining, err)
+	}
+	for _, call := range mock.CallsTo("CreateCommitStatus") {
+		if call.Args[3].(gitea.CommitStatus).State == "success" {
+			t.Fatal("rejected attempt received success")
+		}
+	}
+	if len(mock.CallsTo("CreateComment")) != 0 {
+		t.Fatal("recovery repeated notification")
+	}
+}
+
+func TestPollOnceCannotLandInterruptedRejectedSuccess(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	deps.Approval.OnApproval = true
+	mock.ListOpenPRsFn = func(context.Context, string, string) ([]gitea.PR, error) {
+		return []gitea.PR{makePR(42, "sha42", "main")}, nil
+	}
+	entry, err := svc.Enqueue(ctx, repoID, 42, "sha42", "main", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UpdateState(ctx, repoID, 42, pg.EntryStateSuccess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RejectHead(ctx, &entry.Entry, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		result, err := poller.PollOnce(ctx, deps)
+		if err != nil || len(result.Errors) != 0 {
+			t.Fatalf("poll failed: %+v %v", result, err)
+		}
+	}
+	if len(mock.CallsTo("MergePR")) != 0 {
+		t.Fatal("rejected success attempt was merged")
+	}
+	remaining, err := svc.GetEntry(ctx, repoID, 42)
+	if err != nil || remaining != nil {
+		t.Fatalf("rejected entry survived: %+v %v", remaining, err)
+	}
+	if len(mock.CallsTo("CreateComment")) != 0 {
+		t.Fatal("recovery repeated notification")
+	}
+}

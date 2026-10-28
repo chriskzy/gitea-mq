@@ -36,46 +36,36 @@ type StartTestingResult struct {
 // transitions it to the "testing" state. If the merge conflicts, the PR
 // is removed from the queue with automerge cancelled and a comment posted.
 func StartTesting(ctx context.Context, f forge.Forge, svc *queue.Service, owner, repo string, repoID int64, entry *pg.QueueEntry, externalURL, mergeLabel string) (*StartTestingResult, error) {
+	if recovered, err := RecoverRejected(ctx, f, svc, owner, repo, entry, externalURL, mergeLabel); err != nil || recovered {
+		return &StartTestingResult{Removed: recovered}, err
+	}
 	branchName := BranchName(entry.PrNumber)
 	targetURL := forge.DashboardPRURL(externalURL, f.Kind(), owner, repo, entry.PrNumber)
 
 	mergeSHA, conflict, err := f.CreateMergeBranch(ctx, owner, repo, entry.TargetBranch, entry.PrHeadSha, branchName)
-	if conflict {
-		slog.Info("merge conflict", "pr", entry.PrNumber)
-
-		logutil.WarnIfErr(forge.CancelMergeIntent(ctx, f, owner, repo, entry.PrNumber, mergeLabel), "cancel merge intent failed", "pr", entry.PrNumber)
-		logutil.WarnIfErr(f.SetMQStatus(ctx, owner, repo, entry.PrHeadSha, forge.MQStatus{
-			State: pg.CheckStateFailure, Description: "Merge conflict with target branch", TargetURL: targetURL,
-		}), "set mq status failed", "pr", entry.PrNumber)
-		logutil.WarnIfErr(f.Comment(ctx, owner, repo, entry.PrNumber,
-			"❌ Removed from merge queue: merge conflict with target branch. Please rebase and re-schedule the merge."),
-			"post comment failed", "pr", entry.PrNumber)
-
-		if err := svc.Dequeue(ctx, repoID, entry.PrNumber); err != nil {
-			return nil, fmt.Errorf("dequeue conflicting PR #%d: %w", entry.PrNumber, err)
+	if conflict || err != nil {
+		reason, desc, state := "merge_conflict", "Merge conflict with target branch", pg.CheckStateFailure
+		comment := "❌ Removed from merge queue: merge conflict with target branch. Please rebase and re-schedule the merge."
+		var detail map[string]any
+		if err != nil && !conflict {
+			reason, desc, state = "merge_error", "Failed to create merge branch", pg.CheckStateError
+			comment = fmt.Sprintf("❌ Removed from merge queue: failed to create merge branch.\n\n```\n%v\n```", err)
+			detail = map[string]any{"error": err.Error()}
 		}
-		svc.RecordEvent(ctx, ejectEvent(repoID, entry, "merge_conflict", nil))
-		SkipPendingMirroredChecks(ctx, f, owner, repo, entry.PrHeadSha)
-		return &StartTestingResult{Removed: true}, nil
-	}
-	if err != nil {
-		// Non-conflict failure (e.g. unrelated histories) — surface to the
-		// user and remove rather than retry silently.
-		slog.Error("merge branch creation failed", "pr", entry.PrNumber, "error", err)
-
-		logutil.WarnIfErr(forge.CancelMergeIntent(ctx, f, owner, repo, entry.PrNumber, mergeLabel), "cancel merge intent failed", "pr", entry.PrNumber)
-		logutil.WarnIfErr(f.SetMQStatus(ctx, owner, repo, entry.PrHeadSha, forge.MQStatus{
-			State: pg.CheckStateError, Description: "Failed to create merge branch", TargetURL: targetURL,
-		}), "set mq status failed", "pr", entry.PrNumber)
-		logutil.WarnIfErr(f.Comment(ctx, owner, repo, entry.PrNumber,
-			fmt.Sprintf("❌ Removed from merge queue: failed to create merge branch.\n\n```\n%v\n```", err)),
-			"post comment failed", "pr", entry.PrNumber)
-
-		if err := svc.Dequeue(ctx, repoID, entry.PrNumber); err != nil {
-			return nil, fmt.Errorf("dequeue PR #%d after merge error: %w", entry.PrNumber, err)
+		claimed, rejectErr := svc.RejectHead(ctx, entry, true, func(notify bool) {
+			logutil.WarnIfErr(forge.CancelMergeIntent(ctx, f, owner, repo, entry.PrNumber, mergeLabel), "cancel merge intent failed", "pr", entry.PrNumber)
+			logutil.WarnIfErr(f.SetMQStatus(ctx, owner, repo, entry.PrHeadSha, forge.MQStatus{State: state, Description: desc, TargetURL: targetURL}), "set mq status failed", "pr", entry.PrNumber)
+			if notify {
+				logutil.WarnIfErr(f.Comment(ctx, owner, repo, entry.PrNumber, comment), "post comment failed", "pr", entry.PrNumber)
+			}
+			SkipPendingMirroredChecks(ctx, f, owner, repo, entry.PrHeadSha)
+		})
+		if rejectErr != nil {
+			return nil, fmt.Errorf("reject queue attempt: %w", rejectErr)
 		}
-		svc.RecordEvent(ctx, ejectEvent(repoID, entry, "merge_error", map[string]any{"error": err.Error()}))
-		SkipPendingMirroredChecks(ctx, f, owner, repo, entry.PrHeadSha)
+		if claimed {
+			svc.RecordEvent(ctx, ejectEvent(repoID, entry, reason, detail))
+		}
 		return &StartTestingResult{Removed: true}, nil
 	}
 
@@ -203,4 +193,20 @@ func CleanupStaleBranches(ctx context.Context, f forge.Forge, svc *queue.Service
 	slog.Info("startup merge branch cleanup", "owner", owner, "repo", repo,
 		"active_branches", len(activeBranches), "stale_deleted", deleted)
 	return nil
+}
+
+// RecoverRejected finishes an interrupted terminal removal before testing or
+// success can resume. The persisted claim prevents a second notification.
+func RecoverRejected(ctx context.Context, f forge.Forge, svc *queue.Service, owner, repo string, entry *pg.QueueEntry, externalURL, mergeLabel string) (bool, error) {
+	rejected, err := svc.IsRejectedAttempt(ctx, entry.ID)
+	if err != nil || !rejected {
+		return false, err
+	}
+	_, err = svc.RejectHead(ctx, entry, true, func(bool) {
+		logutil.WarnIfErr(f.SetMQStatus(ctx, owner, repo, entry.PrHeadSha, forge.MQStatus{State: pg.CheckStateFailure, Description: "Previous queue attempt was rejected", TargetURL: forge.DashboardPRURL(externalURL, f.Kind(), owner, repo, entry.PrNumber)}), "restore rejected status failed", "pr", entry.PrNumber)
+		logutil.WarnIfErr(forge.CancelMergeIntent(ctx, f, owner, repo, entry.PrNumber, mergeLabel), "cancel rejected intent failed", "pr", entry.PrNumber)
+		CleanupMergeBranch(ctx, f, owner, repo, entry)
+		SkipPendingMirroredChecks(ctx, f, owner, repo, entry.PrHeadSha)
+	})
+	return true, err
 }

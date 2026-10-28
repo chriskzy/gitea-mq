@@ -14,6 +14,40 @@ RETURNING *;
 DELETE FROM queue_entries
 WHERE repo_id = $1 AND pr_number = $2;
 
+-- name: LockAdmission :exec
+SELECT pg_advisory_xact_lock(hashtextextended(@lock_key::text, 0));
+
+-- name: LockRejection :exec
+SELECT pg_advisory_lock(hashtextextended(@lock_key::text, 0));
+
+-- name: UnlockRejection :one
+SELECT pg_advisory_unlock(hashtextextended(@lock_key::text, 0));
+
+-- name: RejectHead :one
+INSERT INTO rejected_heads (repo_id, pr_number, head_sha, target_branch, entry_id)
+SELECT repo_id, pr_number, pr_head_sha, target_branch, id
+FROM queue_entries WHERE id = @entry_id
+ON CONFLICT (repo_id, pr_number, head_sha, target_branch)
+DO UPDATE SET intent_cleared = FALSE, entry_id = EXCLUDED.entry_id, rejected_at = clock_timestamp()
+WHERE rejected_heads.entry_id <> EXCLUDED.entry_id
+RETURNING entry_id;
+
+-- name: GetRejectedHead :one
+SELECT intent_cleared FROM rejected_heads
+WHERE repo_id = $1 AND pr_number = $2 AND head_sha = $3 AND target_branch = $4;
+
+-- name: ClearRejectedHead :exec
+DELETE FROM rejected_heads
+WHERE repo_id = $1 AND pr_number = $2 AND head_sha = $3 AND target_branch = $4;
+
+-- name: ObserveClearedIntent :exec
+UPDATE rejected_heads SET intent_cleared = TRUE
+WHERE repo_id = @repo_id AND pr_number = @pr_number AND head_sha = @head_sha
+  AND rejected_at <= @observed_at;
+
+-- name: AdmissionObservationTime :one
+SELECT clock_timestamp()::timestamptz AS observed_at;
+
 -- Queue order everywhere: in-flight entries first so a priority arrival
 -- never preempts them, then priority, then FIFO.
 
@@ -187,3 +221,6 @@ DELETE FROM queue_events WHERE created_at < $1;
 UPDATE queue_entries SET infra_retries = infra_retries + 1
 WHERE id = $1
 RETURNING infra_retries;
+
+-- name: IsRejectedAttempt :one
+SELECT EXISTS (SELECT 1 FROM rejected_heads WHERE entry_id = $1);

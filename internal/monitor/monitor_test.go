@@ -4,6 +4,8 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +17,87 @@ import (
 	"github.com/Mic92/gitea-mq/internal/store/pg"
 	"github.com/Mic92/gitea-mq/internal/testutil"
 )
+
+func TestOverlappingFailuresNotifyOnceAndDoNotDeleteReplacement(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupMonitorTest(t)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	entry := testutil.EnqueueTesting(t, svc, repoID, 42, "sha42", "merge-sha")
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	var statuses, comments, lateCleanup atomic.Int32
+	var replacementActive atomic.Bool
+	mock.CreateCommitStatusFn = func(context.Context, string, string, string, gitea.CommitStatus) error {
+		if statuses.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	mock.CreateCommentFn = func(context.Context, string, string, int64, string) error { comments.Add(1); return nil }
+	mock.CancelAutoMergeFn = func(context.Context, string, string, int64) error {
+		if replacementActive.Load() {
+			lateCleanup.Add(1)
+		}
+		return nil
+	}
+	mock.DeleteBranchFn = func(context.Context, string, string, string) error {
+		if replacementActive.Load() {
+			lateCleanup.Add(1)
+		}
+		return nil
+	}
+	first := make(chan error, 1)
+	go func() { first <- monitor.HandleFailure(ctx, deps, entry, "ci/build", "") }()
+	<-entered
+	second := make(chan error, 1)
+	go func() { second <- monitor.HandleFailure(ctx, deps, entry, "ci/build", "") }()
+	type admission struct {
+		result *queue.EnqueueResult
+		err    error
+	}
+	replacement := make(chan admission, 1)
+	go func() {
+		r, err := svc.EnqueueAutomatic(ctx, repoID, 42, "fixed-head", "main", false, true)
+		if err == nil && r != nil {
+			replacementActive.Store(true)
+		}
+		replacement <- admission{r, err}
+	}()
+	select {
+	case got := <-replacement:
+		t.Fatalf("replacement entered before forge cleanup: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	select {
+	case err := <-second:
+		t.Fatalf("duplicate handler released owner entry early: %v", err)
+	default:
+	}
+	unblock()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	got := <-replacement
+	if got.err != nil || got.result == nil || !got.result.IsNew {
+		t.Fatalf("replacement failed: %+v", got)
+	}
+	if err := monitor.HandleFailure(ctx, deps, entry, "ci/build", ""); err != nil {
+		t.Fatal(err)
+	}
+	if comments.Load() != 1 || lateCleanup.Load() != 0 {
+		t.Fatalf("comments=%d late cleanup=%d", comments.Load(), lateCleanup.Load())
+	}
+	current, err := svc.GetEntry(ctx, repoID, 42)
+	if err != nil || current == nil || current.ID != got.result.Entry.ID {
+		t.Fatalf("replacement lost: %+v %v", current, err)
+	}
+}
 
 func setupMonitorTest(t *testing.T) (*monitor.Deps, *gitea.MockClient, *queue.Service, context.Context, int64) {
 	t.Helper()
@@ -425,5 +508,28 @@ func TestInfraRetry_NoMatchEjects(t *testing.T) {
 	}
 	if n := len(mock.CallsTo("CreateComment")); n != 1 {
 		t.Fatalf("not ejected (%d comments)", n)
+	}
+}
+
+func TestSuccessCannotResumeRejectedAttempt(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupMonitorTest(t)
+	entry := testutil.EnqueueTesting(t, svc, repoID, 42, "sha42", "merge-sha")
+	if _, err := svc.RejectHead(ctx, entry, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitor.HandleSuccess(ctx, deps, entry); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := svc.GetEntry(ctx, repoID, 42)
+	if err != nil || remaining != nil {
+		t.Fatalf("rejected entry survived: %+v %v", remaining, err)
+	}
+	for _, call := range mock.CallsTo("CreateCommitStatus") {
+		if call.Args[3].(gitea.CommitStatus).State == "success" {
+			t.Fatal("rejected attempt received success")
+		}
+	}
+	if len(mock.CallsTo("CreateComment")) != 0 {
+		t.Fatal("recovery repeated notification")
 	}
 }
