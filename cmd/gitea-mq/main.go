@@ -160,6 +160,7 @@ func run() error {
 		MergeChecks:      cfg.MergeRequiredChecks,
 		SkipSetup:        !cfg.AutoSetup,
 		MergeLabel:       cfg.MergeLabel,
+		TargetBranches:   cfg.TargetBranches,
 		PriorityLabel:    cfg.PriorityLabel,
 		FailureDetails: failure.Options{
 			Enabled:  cfg.FailureDetails,

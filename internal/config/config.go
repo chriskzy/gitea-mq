@@ -19,15 +19,17 @@ type Config struct {
 	Gitea  *GiteaConfig  // nil if unconfigured
 	Github *GithubConfig // nil if unconfigured
 
-	DatabaseURL         string
-	ListenAddr          string
-	WebhookPath         string
-	ExternalURL         string
-	BasePath            string
-	PollInterval        time.Duration
-	IdlePollInterval    time.Duration
-	CheckTimeout        time.Duration
-	RequiredChecks      []string
+	DatabaseURL      string
+	ListenAddr       string
+	WebhookPath      string
+	ExternalURL      string
+	BasePath         string
+	PollInterval     time.Duration
+	IdlePollInterval time.Duration
+	CheckTimeout     time.Duration
+	RequiredChecks   []string
+	// TargetBranches limits admission to exact PR base/queue target names; empty allows all.
+	TargetBranches      []string
 	MergeLabel          string
 	PriorityLabel       string
 	LabelPrefix         string
@@ -200,6 +202,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg.RequiredChecks = parseList(os.Getenv("GITEA_MQ_REQUIRED_CHECKS"))
+	cfg.TargetBranches = parseList(os.Getenv("GITEA_MQ_TARGET_BRANCHES"))
 	cfg.PRRequiredChecks = optionalList("GITEA_MQ_PR_REQUIRED_CHECKS")
 	cfg.MergeRequiredChecks = optionalList("GITEA_MQ_MERGE_REQUIRED_CHECKS")
 

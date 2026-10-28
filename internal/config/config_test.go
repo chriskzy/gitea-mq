@@ -379,3 +379,16 @@ func TestLoad_ApprovalOptions(t *testing.T) {
 		t.Fatalf("enqueue on approval must imply require approval: %+v", cfg)
 	}
 }
+
+func TestLoad_TargetBranches(t *testing.T) {
+	setEnv(t, giteaEnv)
+	cfg, err := Load()
+	if err != nil || len(cfg.TargetBranches) != 0 {
+		t.Fatalf("default: %+v %v", cfg, err)
+	}
+	t.Setenv("GITEA_MQ_TARGET_BRANCHES", "main, release/stable")
+	cfg, err = Load()
+	if err != nil || !slices.Equal(cfg.TargetBranches, []string{"main", "release/stable"}) {
+		t.Fatalf("targets: %+v %v", cfg, err)
+	}
+}
