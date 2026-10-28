@@ -183,6 +183,7 @@ func run() error {
 		SuccessTimeout:      5 * time.Minute,
 		SkipQueueIfUpToDate: cfg.SkipQueueIfUpToDate,
 		BatchMax:            cfg.BatchMax,
+		BatchPolicyPath:     cfg.BatchPolicyPath,
 		BisectMaxSteps:      cfg.BisectMaxSteps,
 	})
 

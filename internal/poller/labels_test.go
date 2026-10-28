@@ -52,6 +52,16 @@ func TestStateLabelWaitingWhenOwnCIPending(t *testing.T) {
 	requireApplied(t, mock, "7 +mq/waiting -")
 }
 
+func TestBatchSingletonLabelSurvivesStateReconciliation(t *testing.T) {
+	deps, mock, _, ctx, _ := setupStateLabelTest(t)
+	mock.GetRequiredChecksFn = func(context.Context, string, string, string) ([]string, error) { return []string{"ci"}, nil }
+	mock.ListOpenPRsFn = openPRs(forge.PR{Number: 7, State: "open", HeadSHA: "h7", BaseBranch: "main", Labels: []string{"merge-queue", "batch/singleton", "mq/queued"}})
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+	requireApplied(t, mock, "7 +mq/waiting -mq/queued")
+}
+
 func TestStateLabelNoneWithoutMergeIntent(t *testing.T) {
 	deps, mock, _, ctx, _ := setupStateLabelTest(t)
 	mock.ListOpenPRsFn = openPRs(forge.PR{Number: 7, State: "open", HeadSHA: "h7", BaseBranch: "main"})

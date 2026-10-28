@@ -91,7 +91,8 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_ENQUEUE_ON_APPROVAL` | no | `false` | Approval counts as merge intent: an approved PR with green CI is queued without automerge or the merge label. Implies `GITEA_MQ_REQUIRE_APPROVAL` |
 | `GITEA_MQ_PRIORITY_LABEL` | no | - | PRs carrying this label are tested ahead of unlabelled ones, without interrupting running tests |
 | `GITEA_MQ_LABEL_PREFIX` | no | `mq/` | Prefix of the queue state labels set on PRs (see [Queue labels](#queue-labels)); set to `none` to disable |
-| `GITEA_MQ_BATCH_MAX` | no | `1` | Max PRs tested together as one batch. `1` = batching off (legacy behaviour). `0` = everything currently queued |
+| `GITEA_MQ_BATCH_MAX` | no | `1` | Max PRs tested together, **1–10 only**. `1` = batching off (legacy behaviour); 0 and values above 10 are rejected |
+| `GITEA_MQ_BATCH_POLICY_PATH` | no | unset | Enable adaptive FIFO grouping using the target-committed `required-check-policy.v1` routing JSON with an `adaptive_batch` v1 isolation contract. Missing/invalid inputs fall back to a singleton. |
 | `GITEA_MQ_BISECT_MAX_STEPS` | no | `0` | Cap on CI builds spent bisecting one batch. `0` = unlimited |
 | `GITEA_MQ_REFRESH_INTERVAL` | no | `10s` | Dashboard auto-refresh interval |
 | `GITEA_MQ_DISCOVERY_INTERVAL` | no | `5m` | How often to re-scan Gitea topics and GitHub installations |
@@ -107,7 +108,7 @@ key is read verbatim). If both forms are set, the plain variable wins.
 
 ## Batching (bors-style)
 
-With `GITEA_MQ_BATCH_MAX` ≠ 1, gitea-mq tests up to N queued PRs at once on a
+With `GITEA_MQ_BATCH_MAX` from 2 through 10, gitea-mq tests up to N queued PRs at once on a
 single `gitea-mq/batch/<id>` branch. On green it **fast-forwards the target
 branch itself** to the tested SHA (the merged tree is exactly what CI saw). On
 red it bisects: split, retest the first half from the current target tip, land
@@ -668,3 +669,34 @@ not a glob. This is an admission filter, not branch protection: existing queue
 entries still obey their original gates. Drain or contain incompatible entries
 before tightening the configured targets. All approval, dependency and required
 CI checks remain in place.
+
+### Adaptive grouping
+
+Set `GITEA_MQ_BATCH_MAX=10` and `GITEA_MQ_BATCH_POLICY_PATH` to the repository's
+existing `required-check-policy.v1` file. That target-committed file must include
+`"adaptive_batch": {"schema_version": "adaptive-batch.v1", "singleton_paths": [...]}`.
+Only simple `*` globs are supported, with Python fnmatch slash semantics; unknown
+syntax or schemas conservatively select one PR. Advisory checks do not become
+required. Inert paths are not narrowed by this advisory adapter.
+
+The queue takes a contiguous FIFO prefix, up to 10, without a fill delay. It
+splits on shared files, unknown ownership, safety/authority/migration/rollback
+paths, explicit dependencies and `batch/singleton`, `safety`, `authority`, `migration`
+or `rollback` labels. Label semantic boundaries that cannot be inferred from
+paths. Native open dependencies and `Depends on #N` are checked. Queue entries
+are revalidated under transaction locks before ownership changes. Fresh priority
+work keeps its own cohort; a cohort waiting 90 minutes takes precedence so fresh
+priority arrivals cannot starve it.
+
+When comparable successful jobs on exact PR heads expose durations, adding suites
+is allowed only when their estimated additional service seconds do not exceed
+the shared service seconds avoided. This is a grouping heuristic, not a wall-clock
+or throughput prediction. Missing durations remain null and permit only candidates
+that add no suites. An aged head accepts no additional suites. Failure rates remain
+unavailable; no synthetic rates are assumed. Selection reasons and inputs appear in
+`batch_formed` event details. All PR-head checks, exact-head approvals, merge-branch
+native gates, bisection, restart recovery and rejected-head suppression still apply.
+
+Rollback needs no schema change: drain live batches and restore the saved image
+and configuration. Unsetting the policy flag restores fixed-size grouping; the
+new binary still enforces the hard cap of 10. `BATCH_MAX=1` is the singleton rollback.

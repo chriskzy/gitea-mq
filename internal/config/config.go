@@ -35,6 +35,7 @@ type Config struct {
 	LabelPrefix         string
 	SkipQueueIfUpToDate bool
 	BatchMax            int
+	BatchPolicyPath     string
 	BisectMaxSteps      int
 	RefreshInterval     time.Duration
 	DiscoveryInterval   time.Duration
@@ -239,9 +240,13 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	cfg.BatchMax, err = parseInt("GITEA_MQ_BATCH_MAX", 1, 0)
+	cfg.BatchPolicyPath = os.Getenv("GITEA_MQ_BATCH_POLICY_PATH")
+	cfg.BatchMax, err = parseInt("GITEA_MQ_BATCH_MAX", 1, 1)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.BatchMax > 10 {
+		return nil, fmt.Errorf("GITEA_MQ_BATCH_MAX must be between 1 and 10")
 	}
 	cfg.BisectMaxSteps, err = parseInt("GITEA_MQ_BISECT_MAX_STEPS", 0, 0)
 	if err != nil {

@@ -48,6 +48,15 @@ func makePR(index int64, headSHA, baseBranch string) gitea.PR {
 // mockAutomergePRs makes the forge report the given PRs as open with
 // auto-merge scheduled — the standard starting point for most poller tests.
 func mockAutomergePRs(mock *gitea.MockClient, prs ...gitea.PR) {
+	mock.GetPRFn = func(_ context.Context, _, _ string, n int64) (*gitea.PR, error) {
+		for _, pr := range prs {
+			if pr.Index == n {
+				return &pr, nil
+			}
+		}
+		return nil, fmt.Errorf("PR #%d not found", n)
+	}
+
 	mock.ListOpenPRsFn = func(_ context.Context, _, _ string) ([]gitea.PR, error) {
 		return prs, nil
 	}
@@ -917,6 +926,11 @@ func TestPollOnce_RequiredApprovals_RemovesOnChangesRequested(t *testing.T) {
 // it itself; unapproved PRs are left alone without any status.
 func TestPollOnce_ApprovalIsIntent(t *testing.T) {
 	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	mock.GetPRFn = func(_ context.Context, _, _ string, n int64) (*gitea.PR, error) {
+		pr := makePR(n, fmt.Sprintf("sha%d", n), "main")
+		return &pr, nil
+	}
+
 	deps.Approval = forge.ApprovalPolicy{Require: true, Count: 1, OnApproval: true}
 	mergeOK(mock)
 	mock.ListOpenPRsFn = func(context.Context, string, string) ([]gitea.PR, error) {
@@ -1070,6 +1084,11 @@ func TestPollOnceCannotFastTrackInterruptedRejection(t *testing.T) {
 
 func TestPollOnceCannotLandInterruptedRejectedSuccess(t *testing.T) {
 	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	mock.GetPRFn = func(_ context.Context, _, _ string, n int64) (*gitea.PR, error) {
+		pr := makePR(n, fmt.Sprintf("sha%d", n), "main")
+		return &pr, nil
+	}
+
 	deps.Approval.OnApproval = true
 	mock.ListOpenPRsFn = func(context.Context, string, string) ([]gitea.PR, error) {
 		return []gitea.PR{makePR(42, "sha42", "main")}, nil

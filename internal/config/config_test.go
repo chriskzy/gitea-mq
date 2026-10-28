@@ -84,13 +84,13 @@ func TestLoad_BatchMax(t *testing.T) {
 		t.Fatalf("defaults: BatchMax=%d BisectMaxSteps=%d", cfg.BatchMax, cfg.BisectMaxSteps)
 	}
 
-	t.Setenv("GITEA_MQ_BATCH_MAX", "0")
+	t.Setenv("GITEA_MQ_BATCH_MAX", "10")
 	t.Setenv("GITEA_MQ_BISECT_MAX_STEPS", "5")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.BatchMax != 0 || cfg.BisectMaxSteps != 5 {
+	if cfg.BatchMax != 10 || cfg.BisectMaxSteps != 5 {
 		t.Fatalf("override: BatchMax=%d BisectMaxSteps=%d", cfg.BatchMax, cfg.BisectMaxSteps)
 	}
 
@@ -390,5 +390,15 @@ func TestLoad_TargetBranches(t *testing.T) {
 	cfg, err = Load()
 	if err != nil || !slices.Equal(cfg.TargetBranches, []string{"main", "release/stable"}) {
 		t.Fatalf("targets: %+v %v", cfg, err)
+	}
+}
+
+func TestLoad_BatchBounds(t *testing.T) {
+	setEnv(t, giteaEnv)
+	for _, value := range []string{"0", "-1", "11", "15", "999999"} {
+		t.Setenv("GITEA_MQ_BATCH_MAX", value)
+		if _, err := Load(); err == nil {
+			t.Fatalf("accepted %s", value)
+		}
 	}
 }
