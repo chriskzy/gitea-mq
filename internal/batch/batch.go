@@ -48,10 +48,11 @@ type Engine struct {
 	RepoID      int64
 	ExternalURL string
 
-	BatchMax       int
-	BisectMaxSteps int
-	CheckTimeout   time.Duration
-	FallbackChecks []string
+	BatchMax        int
+	BatchPolicyPath string
+	BisectMaxSteps  int
+	CheckTimeout    time.Duration
+	FallbackChecks  []string
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
 	// MergeChecks, when non-nil, replaces the required checks on batch
@@ -152,14 +153,28 @@ func (e *Engine) FormAndBuild(ctx context.Context, targetBranch string) (*pg.Bat
 		}
 		return nil, nil
 	}
-	b, err := e.Queue.FormBatch(ctx, e.RepoID, targetBranch, e.BatchMax)
+	var expected []int64
+	maxSize := e.BatchMax
+	var decision map[string]any
+	if e.BatchPolicyPath != "" {
+		candidates, err := e.Queue.QueuedCandidates(ctx, e.RepoID, targetBranch, maxSize)
+		if err != nil || len(candidates) == 0 {
+			return nil, err
+		}
+		n, detail, err := e.selectBatch(ctx, targetBranch, candidates)
+		if err != nil || n == 0 {
+			return nil, err
+		}
+		maxSize, expected, decision = n, ids(candidates[:n]), detail
+	}
+	b, err := e.Queue.FormBatchSelected(ctx, e.RepoID, targetBranch, maxSize, expected)
 	if err != nil || b == nil {
 		return nil, err
 	}
 	slog.Info("batch formed", "batch", b.ID, "branch", targetBranch, "members", len(b.MemberIds))
 	e.Queue.RecordEvent(ctx, queue.Event{
 		RepoID: e.RepoID, Kind: queue.EventBatchFormed, BatchID: b.ID, TargetBranch: targetBranch,
-		Detail: map[string]any{"members": len(b.MemberIds)},
+		Detail: map[string]any{"members": len(b.MemberIds), "selection": decision},
 	})
 	return b, e.Build(ctx, b)
 }

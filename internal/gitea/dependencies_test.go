@@ -11,6 +11,7 @@ import (
 
 func TestForge_OpenDependencies_KeepsOnlyOpenOnes(t *testing.T) {
 	mock := &gitea.MockClient{
+		GetPRFn: func(_ context.Context, _, _ string, n int64) (*gitea.PR, error) { return &gitea.PR{Index: n}, nil },
 		ListIssueDependenciesFn: func(_ context.Context, _, _ string, _ int64) ([]gitea.Issue, error) {
 			return []gitea.Issue{
 				{Index: 7, State: "open", Repository: &gitea.IssueRepo{FullName: "org/app"}},
@@ -32,6 +33,7 @@ func TestForge_OpenDependencies_KeepsOnlyOpenOnes(t *testing.T) {
 // error that would stall the queue.
 func TestForge_OpenDependencies_DisabledMeansNone(t *testing.T) {
 	mock := &gitea.MockClient{
+		GetPRFn: func(_ context.Context, _, _ string, n int64) (*gitea.PR, error) { return &gitea.PR{Index: n}, nil },
 		ListIssueDependenciesFn: func(_ context.Context, _, _ string, _ int64) ([]gitea.Issue, error) {
 			return nil, &gitea.APIError{StatusCode: 404, Body: "disabled repo dependencies"}
 		},
@@ -46,6 +48,7 @@ func TestForge_OpenDependencies_DisabledMeansNone(t *testing.T) {
 // blocked PR land.
 func TestForge_OpenDependencies_OtherErrorsSurface(t *testing.T) {
 	mock := &gitea.MockClient{
+		GetPRFn: func(_ context.Context, _, _ string, n int64) (*gitea.PR, error) { return &gitea.PR{Index: n}, nil },
 		ListIssueDependenciesFn: func(_ context.Context, _, _ string, _ int64) ([]gitea.Issue, error) {
 			return nil, &gitea.APIError{StatusCode: 500, Body: "boom"}
 		},

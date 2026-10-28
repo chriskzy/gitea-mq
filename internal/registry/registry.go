@@ -46,6 +46,7 @@ type Deps struct {
 	SuccessTimeout      time.Duration
 	SkipQueueIfUpToDate bool
 	BatchMax            int
+	BatchPolicyPath     string
 	BisectMaxSteps      int
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
@@ -137,22 +138,23 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 	var batchEngine *batch.Engine
 	if r.deps.BatchMax != 1 {
 		batchEngine = &batch.Engine{
-			Forge:          f,
-			Queue:          r.deps.Queue,
-			Owner:          ref.Owner,
-			Repo:           ref.Name,
-			RepoID:         repo.ID,
-			ExternalURL:    r.deps.ExternalURL,
-			BatchMax:       r.deps.BatchMax,
-			BisectMaxSteps: r.deps.BisectMaxSteps,
-			CheckTimeout:   r.deps.CheckTimeout,
-			FallbackChecks: r.deps.FallbackChecks,
-			MergeLabel:     r.deps.MergeLabel,
-			SkipIfUpToDate: r.deps.SkipQueueIfUpToDate,
-			Approval:       r.approvalPolicy(),
-			FailureDetails: r.deps.FailureDetails,
-			Retry:          retryPolicy,
-			Advance:        triggerPoll,
+			Forge:           f,
+			Queue:           r.deps.Queue,
+			Owner:           ref.Owner,
+			Repo:            ref.Name,
+			RepoID:          repo.ID,
+			ExternalURL:     r.deps.ExternalURL,
+			BatchMax:        r.deps.BatchMax,
+			BatchPolicyPath: r.deps.BatchPolicyPath,
+			BisectMaxSteps:  r.deps.BisectMaxSteps,
+			CheckTimeout:    r.deps.CheckTimeout,
+			FallbackChecks:  r.deps.FallbackChecks,
+			MergeLabel:      r.deps.MergeLabel,
+			SkipIfUpToDate:  r.deps.SkipQueueIfUpToDate,
+			Approval:        r.approvalPolicy(),
+			FailureDetails:  r.deps.FailureDetails,
+			Retry:           retryPolicy,
+			Advance:         triggerPoll,
 
 			ChecksFromConfig: r.deps.ChecksFromConfig,
 			MergeChecks:      r.deps.MergeChecks,

@@ -1,0 +1,33 @@
+{
+  "source": "Gitea API read 2026-10-28; projected fields only; not performance comparison evidence",
+  "run": {
+    "id": 25481,
+    "path": "ckz-infra-ci.yml@refs/pull/2067/head",
+    "head_sha": "ef47ffc4b07588f5bf564e4003a25d787b09a0c6",
+    "event": "pull_request"
+  },
+  "jobs": [
+    {
+      "id": 30884,
+      "run_id": 25481,
+      "name": "Select merge-branch work (portable Linux)",
+      "head_sha": "ef47ffc4b07588f5bf564e4003a25d787b09a0c6",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "1970-01-01T00:00:00Z",
+      "completed_at": "1970-01-01T00:00:00Z",
+      "html_url": "http://192.168.2.106:3002/ckz_data_labs/Terminus/actions/runs/25481/jobs/30884"
+    },
+    {
+      "id": 30885,
+      "run_id": 25481,
+      "name": "validate",
+      "head_sha": "ef47ffc4b07588f5bf564e4003a25d787b09a0c6",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-10-28T15:59:41Z",
+      "completed_at": "2026-10-28T16:00:54Z",
+      "html_url": "http://192.168.2.106:3002/ckz_data_labs/Terminus/actions/runs/25481/jobs/30885"
+    }
+  ]
+}

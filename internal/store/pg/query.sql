@@ -54,7 +54,8 @@ SELECT clock_timestamp()::timestamptz AS observed_at;
 -- name: ListActiveEntriesByRepo :many
 SELECT * FROM queue_entries
 WHERE repo_id = $1
-ORDER BY target_branch, state = 'queued', priority DESC, enqueued_at, id;
+ORDER BY target_branch, state = 'queued', enqueued_at <= NOW() - INTERVAL '90 minutes' DESC,
+  CASE WHEN enqueued_at <= NOW() - INTERVAL '90 minutes' THEN FALSE ELSE priority END DESC, enqueued_at, id;
 
 -- name: GetQueueEntry :one
 SELECT * FROM queue_entries
@@ -95,15 +96,18 @@ WHERE queue_entry_id = $1;
 -- name: GetHeadOfQueue :one
 SELECT * FROM queue_entries
 WHERE repo_id = $1 AND target_branch = $2
-ORDER BY state = 'queued', priority DESC, enqueued_at, id
+ORDER BY state = 'queued', enqueued_at <= NOW() - INTERVAL '90 minutes' DESC,
+  CASE WHEN enqueued_at <= NOW() - INTERVAL '90 minutes' THEN FALSE ELSE priority END DESC, enqueued_at, id
 LIMIT 1;
 
 -- name: CountQueuePosition :one
 SELECT COUNT(*) FROM queue_entries qe
 JOIN queue_entries me ON me.repo_id = qe.repo_id AND me.pr_number = $3
 WHERE qe.repo_id = $1 AND qe.target_branch = $2
-  AND (qe.state = 'queued', NOT qe.priority, qe.enqueued_at, qe.id)
-   <= (me.state = 'queued', NOT me.priority, me.enqueued_at, me.id);
+  AND (qe.state = 'queued', qe.enqueued_at > NOW() - INTERVAL '90 minutes',
+      CASE WHEN qe.enqueued_at <= NOW() - INTERVAL '90 minutes' THEN TRUE ELSE NOT qe.priority END, qe.enqueued_at, qe.id)
+   <= (me.state = 'queued', me.enqueued_at > NOW() - INTERVAL '90 minutes',
+      CASE WHEN me.enqueued_at <= NOW() - INTERVAL '90 minutes' THEN TRUE ELSE NOT me.priority END, me.enqueued_at, me.id);
 
 -- Multi-row statements lock in id order to avoid deadlocks.
 
@@ -114,10 +118,14 @@ WHERE id IN (SELECT l.id FROM queue_entries l WHERE l.repo_id = $1 ORDER BY l.id
 -- name: TakeQueuedHead :many
 SELECT q.* FROM queue_entries q
 WHERE q.repo_id = $1 AND q.target_branch = $2 AND q.state = 'queued'
-  -- Priority batches exclude normal PRs so one cannot delay the other via bisection.
-  AND (q.priority OR NOT EXISTS (
-    SELECT 1 FROM queue_entries p
-    WHERE p.repo_id = $1 AND p.target_branch = $2 AND p.state = 'queued' AND p.priority))
+  -- An aged FIFO cohort cannot be starved by fresh priority arrivals.
+  AND CASE WHEN EXISTS (
+    SELECT 1 FROM queue_entries a WHERE a.repo_id = $1 AND a.target_branch = $2
+      AND a.state = 'queued' AND a.enqueued_at <= NOW() - INTERVAL '90 minutes')
+    THEN q.enqueued_at <= NOW() - INTERVAL '90 minutes'
+    ELSE (q.priority OR NOT EXISTS (
+      SELECT 1 FROM queue_entries p
+      WHERE p.repo_id = $1 AND p.target_branch = $2 AND p.state = 'queued' AND p.priority)) END
 ORDER BY q.id
 LIMIT $3
 FOR NO KEY UPDATE OF q;

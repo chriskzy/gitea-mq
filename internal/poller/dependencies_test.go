@@ -9,6 +9,44 @@ import (
 	"github.com/Mic92/gitea-mq/internal/poller"
 )
 
+func TestTextDependencyDoesNotStarveIndependentPR(t *testing.T) {
+	deps, mock, svc, ctx, repoID := setupPollerTest(t)
+	child, ready := makePR(1, "sha1", "main"), makePR(2, "sha2", "main")
+	child.Body = "Depends on #7"
+	mockAutomergePRs(mock, child, ready)
+	merged := false
+	mock.GetPRFn = func(_ context.Context, _, _ string, n int64) (*gitea.PR, error) {
+		if n == 1 {
+			return &child, nil
+		}
+		if n == 2 {
+			return &ready, nil
+		}
+		return &gitea.PR{Index: 7, State: "closed", HasMerged: merged}, nil
+	}
+	mock.MergeBranchesFn = func(_ context.Context, _, _, _, _, _ string) (*gitea.MergeResult, error) {
+		return &gitea.MergeResult{SHA: "merge"}, nil
+	}
+	for range 2 {
+		if _, err := poller.PollOnce(ctx, deps); err != nil {
+			t.Fatal(err)
+		}
+		if ent, _ := svc.GetEntry(ctx, repoID, 1); ent != nil {
+			t.Fatal("unmerged parent admitted child")
+		}
+		if ent, _ := svc.GetEntry(ctx, repoID, 2); ent == nil {
+			t.Fatal("independent follower starved")
+		}
+	}
+	merged = true
+	if _, err := poller.PollOnce(ctx, deps); err != nil {
+		t.Fatal(err)
+	}
+	if ent, _ := svc.GetEntry(ctx, repoID, 1); ent == nil {
+		t.Fatal("merged parent did not release child")
+	}
+}
+
 // A PR the forge would refuse to merge is not queued: why shows on its head,
 // once, and it is queued by itself as soon as the dependency closes.
 func TestPollOnce_OpenDependency_WaitsOutsideTheQueue(t *testing.T) {

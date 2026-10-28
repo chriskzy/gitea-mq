@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+
+	"github.com/Mic92/gitea-mq/internal/forge"
 
 	"github.com/Mic92/gitea-mq/internal/store/pg"
 	"github.com/jackc/pgx/v5"
@@ -15,14 +18,27 @@ var ErrBatchNotLive = errors.New("batch is no longer live")
 // FormBatch atomically takes up to max queued entries for (repo, branch),
 // creates a batch row owning them, and marks each entry testing with
 // active_batch_id set. Returns nil when there is nothing queued.
-// max <= 0 means "everything currently queued".
+// Nonpositive and oversized limits are bounded by the hard maximum of 10.
 func (s *Service) FormBatch(ctx context.Context, repoID int64, targetBranch string, max int) (*pg.Batch, error) {
-	var batch pg.Batch
-	if max <= 0 {
-		// Postgres LIMIT NULL is awkward through sqlc; a generous cap is
-		// effectively "all".
-		max = 1 << 30
+	return s.FormBatchSelected(ctx, repoID, targetBranch, max, nil)
+}
+
+// QueuedCandidates reads a bounded snapshot; FormBatchSelected rechecks it under locks.
+func (s *Service) QueuedCandidates(ctx context.Context, repoID int64, branch string, max int) ([]pg.QueueEntry, error) {
+	return s.queries().TakeQueuedHead(ctx, pg.TakeQueuedHeadParams{RepoID: repoID, TargetBranch: branch, Limit: int32(batchLimit(max))})
+}
+
+func batchLimit(n int) int {
+	if n <= 0 || n > forge.BatchHardMax {
+		return forge.BatchHardMax
 	}
+	return n
+}
+
+// FormBatchSelected refuses a changed queue prefix rather than applying stale advice.
+func (s *Service) FormBatchSelected(ctx context.Context, repoID int64, targetBranch string, max int, expected []int64) (*pg.Batch, error) {
+	var batch pg.Batch
+	max = batchLimit(max)
 	err := s.withTx(ctx, func(q *pg.Queries) error {
 		entries, err := q.TakeQueuedHead(ctx, pg.TakeQueuedHeadParams{
 			RepoID:       repoID,
@@ -38,6 +54,9 @@ func (s *Service) FormBatch(ctx context.Context, repoID int64, targetBranch stri
 		ids := make([]int64, len(entries))
 		for i, e := range entries {
 			ids[i] = e.ID
+		}
+		if expected != nil && !slices.Equal(ids, expected) {
+			return nil
 		}
 		batch, err = q.CreateBatch(ctx, pg.CreateBatchParams{
 			RepoID:       repoID,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -335,10 +336,9 @@ func (f *giteaForge) EnsureRepoSetup(ctx context.Context, owner, name string, cf
 func (f *giteaForge) OpenDependencies(ctx context.Context, owner, name string, number int64) ([]forge.Dependency, error) {
 	issues, err := f.client.ListIssueDependencies(ctx, owner, name, number)
 	if err != nil {
-		if IsNotFound(err) {
-			return nil, nil
+		if !IsNotFound(err) {
+			return nil, err
 		}
-		return nil, err
 	}
 	var open []forge.Dependency
 	for _, is := range issues {
@@ -350,6 +350,30 @@ func (f *giteaForge) OpenDependencies(ctx context.Context, owner, name string, n
 			d.Repo = is.Repository.FullName
 		}
 		open = append(open, d)
+	}
+	// Text dependencies share the poller's admission and pre-land resolver, so
+	// a blocked head never occupies the runnable queue in front of others.
+	pr, err := f.client.GetPR(ctx, owner, name, number)
+	if err != nil {
+		return nil, err
+	}
+	if pr != nil {
+		for _, match := range regexp.MustCompile(`(?im)^\s*Depends on #(\d+)\s*$`).FindAllStringSubmatch(pr.Body, -1) {
+			n, err := strconv.ParseInt(match[1], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid dependency number: %w", err)
+			}
+			parent, err := f.client.GetPR(ctx, owner, name, n)
+			if err != nil {
+				return nil, err
+			}
+			if parent == nil || !parent.HasMerged {
+				dep := forge.Dependency{Number: n}
+				if !slices.Contains(open, dep) {
+					open = append(open, dep)
+				}
+			}
+		}
 	}
 	return open, nil
 }

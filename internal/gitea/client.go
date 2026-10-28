@@ -322,18 +322,24 @@ type Client interface {
 
 // ActionJob is the subset of a Gitea Actions job we need.
 type ActionJob struct {
-	ID         int64  `json:"id"`
-	RunID      int64  `json:"run_id"`
-	Name       string `json:"name"`
-	HTMLURL    string `json:"html_url"`
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
+	HeadSHA     string    `json:"head_sha"`
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at"`
+	ID          int64     `json:"id"`
+	RunID       int64     `json:"run_id"`
+	Name        string    `json:"name"`
+	HTMLURL     string    `json:"html_url"`
+	Status      string    `json:"status"`
+	Conclusion  string    `json:"conclusion"`
 }
 
 // ActionRun is the subset of a Gitea Actions run we need.
 type ActionRun struct {
-	ID        int64 `json:"id"`
-	RunNumber int64 `json:"run_number"`
+	HeadSHA   string `json:"head_sha"`
+	Event     string `json:"event"`
+	Path      string `json:"path"`
+	ID        int64  `json:"id"`
+	RunNumber int64  `json:"run_number"`
 }
 
 // PRReview is the subset of a pull request review we need.
