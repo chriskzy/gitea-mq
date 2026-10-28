@@ -77,6 +77,7 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_POLL_INTERVAL` | no | `30s` | Reconcile poll interval for repos with active queue work |
 | `GITEA_MQ_IDLE_POLL_INTERVAL` | no | `15m` | Reconcile poll interval for idle repos (no active queue entries). Only used on forges that deliver CI status via webhooks (GitHub, Gitea >= 1.24); there idle repos are driven by webhooks and this periodic poll is just a safety net for deliveries missed while the service was down. Keeping it long bounds forge API usage to the number of repos with live queues rather than all managed repos |
 | `GITEA_MQ_CHECK_TIMEOUT` | no | `1h` | Timeout for required checks |
+| `GITEA_MQ_TARGET_BRANCHES` | no | empty (all) | Comma-separated exact branch names eligible for new queue admission; both PR base and resolved queue target must match. Set `main` for a main-only landing gate. |
 | `GITEA_MQ_SKIP_QUEUE_IF_UP_TO_DATE` | no | `true` | Skip the merge-branch CI run when a PR is already rebased onto the target branch tip (its own green CI already covers the merged tree) |
 | `GITEA_MQ_REQUIRED_CHECKS` | no | - | Fallback required CI contexts when branch protection has none (comma-separated) |
 | `GITEA_MQ_PR_REQUIRED_CHECKS` | no | unset | Checks the PR head must pass before it is queued, instead of protection / `GITEA_MQ_REQUIRED_CHECKS`. Set to an empty value to not gate the PR head on CI. See [CI configuration](#ci-configuration) |
@@ -654,3 +655,16 @@ nix fmt
 ## License
 
 [MIT](LICENSE)
+
+### Restricting admission targets
+
+Set `GITEA_MQ_TARGET_BRANCHES=main` when the downstream landing gate accepts
+only PRs into main. Approval, automerge and label admission all check the PR
+base and resolved queue target before reading CI or creating a merge branch.
+An excluded PR keeps its merge intent and receives a deduplicated waiting
+status; retarget it through the normal dependency and review workflow.
+An unset or empty value preserves multi-branch behavior. Matching is exact,
+not a glob. This is an admission filter, not branch protection: existing queue
+entries still obey their original gates. Drain or contain incompatible entries
+before tightening the configured targets. All approval, dependency and required
+CI checks remain in place.
