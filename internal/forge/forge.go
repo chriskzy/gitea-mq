@@ -275,6 +275,8 @@ type Forge interface {
 	IsUpToDate(ctx context.Context, owner, name, base, headSHA string) (bool, error)
 
 	CancelAutoMerge(ctx context.Context, owner, name string, number int64) error
+	// MergeLabelAdder returns who last added label and whether they may merge.
+	MergeLabelAdder(ctx context.Context, owner, name string, number int64, label string) (login string, canMerge bool, err error)
 	// RemoveLabel removes a label from a PR; a missing label is not an error.
 	RemoveLabel(ctx context.Context, owner, name string, number int64, label string) error
 	// MergePR merges the PR (on GitHub: the whole stack up to and including
