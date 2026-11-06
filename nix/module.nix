@@ -294,6 +294,12 @@ in
       description = "Post failing checks and Gitea Actions log tails to the PR and the event on ejection.";
     };
 
+    prHeadDiagnostics = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Publish redacted CI evidence for eligible non-draft PR heads on the unauthenticated dashboard and API. Independent of failureDetails.";
+    };
+
     failureLogLines = lib.mkOption {
       type = lib.types.ints.unsigned;
       default = 30;
@@ -431,6 +437,7 @@ in
         GITEA_MQ_DISCOVERY_INTERVAL = cfg.discoveryInterval;
         GITEA_MQ_LOG_LEVEL = cfg.logLevel;
         GITEA_MQ_FAILURE_DETAILS = lib.boolToString cfg.failureDetails;
+        GITEA_MQ_PR_HEAD_DIAGNOSTICS = lib.boolToString cfg.prHeadDiagnostics;
         GITEA_MQ_FAILURE_LOG_LINES = toString cfg.failureLogLines;
         GITEA_MQ_INFRA_RETRY_PATTERNS = lib.concatStringsSep "\n" cfg.infraRetry.patterns;
         GITEA_MQ_INFRA_RETRY_MAX = toString cfg.infraRetry.max;

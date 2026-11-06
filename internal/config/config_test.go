@@ -74,6 +74,24 @@ var giteaEnv = with(map[string]string{
 	"GITEA_MQ_REPOS":          "o/r",
 })
 
+func TestPRHeadDiagnosticsRequiresIndependentOptIn(t *testing.T) {
+	setEnv(t, giteaEnv)
+	t.Setenv("GITEA_MQ_FAILURE_DETAILS", "true")
+	cfg, err := Load()
+	if err != nil || !cfg.FailureDetails || cfg.PRHeadDiagnostics {
+		t.Fatalf("legacy flag changed: %+v %v", cfg, err)
+	}
+	t.Setenv("GITEA_MQ_PR_HEAD_DIAGNOSTICS", "true")
+	cfg, err = Load()
+	if err != nil || !cfg.PRHeadDiagnostics {
+		t.Fatalf("opt-in ignored: %+v %v", cfg, err)
+	}
+	t.Setenv("GITEA_MQ_PR_HEAD_DIAGNOSTICS", "invalid")
+	if _, err = Load(); err == nil {
+		t.Fatal("invalid diagnostic boolean accepted")
+	}
+}
+
 func TestLoad_BatchMax(t *testing.T) {
 	setEnv(t, giteaEnv)
 	cfg, err := Load()

@@ -98,3 +98,51 @@ func TestTail(t *testing.T) {
 		t.Fatalf("Tail = %q", got)
 	}
 }
+
+func TestCollectBoundsAndRedactsBeforeTruncation(t *testing.T) {
+	states := make(map[string]forge.Check)
+	for i := range 40 {
+		states[strings.Repeat("c", i+1)] = forge.Check{State: pg.CheckStateFailure, Description: strings.Repeat("x", 1000), TargetURL: "https://ci/job"}
+	}
+	f := &logForge{MockForge: &forge.MockForge{}, logs: map[string]string{"https://ci/job": strings.Repeat("x", 395) + token + "\n-----BEGIN PRIVATE KEY-----\nprivate-key-material\n-----END PRIVATE KEY-----"}}
+	checks := failure.CollectDiagnosticStates(t.Context(), failure.Options{Enabled: true, LogLines: 10000, Secrets: []string{token}}, f, "o", "r", states, nil)
+	if len(checks) != 30 {
+		t.Fatalf("check bound=%d", len(checks))
+	}
+	logs := 0
+	for _, c := range checks {
+		if len(c.Description) > 403 {
+			t.Fatal("unbounded description")
+		}
+		if len(c.LogTail) > 0 {
+			logs++
+		}
+		for _, line := range c.LogTail {
+			if strings.Contains(line, "s3cr3") || strings.Contains(line, "private-key-material") {
+				t.Fatalf("redaction leaked truncated secret: %q", line)
+			}
+		}
+	}
+	if logs != 3 {
+		t.Fatalf("log bound=%d", logs)
+	}
+}
+
+func TestEjectionCollectorRetainsExistingLimitsAndOptionalLogs(t *testing.T) {
+	states := make(map[string]forge.Check)
+	for i := range 40 {
+		states[strings.Repeat("c", i+1)] = forge.Check{State: pg.CheckStateFailure, TargetURL: "https://ci/job"}
+	}
+	f := &logForge{MockForge: &forge.MockForge{}, logs: map[string]string{"https://ci/job": strings.Repeat("line\n", 250)}}
+	checks := failure.CollectStates(t.Context(), failure.Options{Enabled: true, LogLines: 250}, f, "o", "r", states, nil)
+	if len(checks) != 40 || len(checks[0].LogTail) != 250 {
+		t.Fatalf("legacy ejection limits changed: checks=%d lines=%d", len(checks), len(checks[0].LogTail))
+	}
+	for _, forgeImpl := range []forge.Forge{&forge.MockForge{}, &logForge{MockForge: &forge.MockForge{}, logs: map[string]string{}}} {
+		for _, c := range failure.CollectStates(t.Context(), failure.Options{Enabled: true, LogLines: 30}, forgeImpl, "o", "r", states, nil) {
+			if c.LogError != "" {
+				t.Fatalf("legacy optional log added error: %s", c.LogError)
+			}
+		}
+	}
+}

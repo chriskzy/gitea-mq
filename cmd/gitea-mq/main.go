@@ -147,21 +147,22 @@ func run() error {
 
 	// Create the repo registry — central coordination for managed repos.
 	reg := registry.New(ctx, &registry.Deps{
-		Forges:           forges,
-		Queue:            queueSvc,
-		WebhookSecret:    giteaWebhookSecret,
-		ExternalURL:      cfg.ExternalURL,
-		PollInterval:     cfg.PollInterval,
-		IdlePollInterval: cfg.IdlePollInterval,
-		CheckTimeout:     cfg.CheckTimeout,
-		FallbackChecks:   cfg.RequiredChecks,
-		ChecksFromConfig: cfg.ChecksFromConfig,
-		PRChecks:         cfg.PRRequiredChecks,
-		MergeChecks:      cfg.MergeRequiredChecks,
-		SkipSetup:        !cfg.AutoSetup,
-		MergeLabel:       cfg.MergeLabel,
-		TargetBranches:   cfg.TargetBranches,
-		PriorityLabel:    cfg.PriorityLabel,
+		Forges:            forges,
+		Queue:             queueSvc,
+		WebhookSecret:     giteaWebhookSecret,
+		ExternalURL:       cfg.ExternalURL,
+		PollInterval:      cfg.PollInterval,
+		IdlePollInterval:  cfg.IdlePollInterval,
+		CheckTimeout:      cfg.CheckTimeout,
+		FallbackChecks:    cfg.RequiredChecks,
+		ChecksFromConfig:  cfg.ChecksFromConfig,
+		PRChecks:          cfg.PRRequiredChecks,
+		MergeChecks:       cfg.MergeRequiredChecks,
+		SkipSetup:         !cfg.AutoSetup,
+		MergeLabel:        cfg.MergeLabel,
+		TargetBranches:    cfg.TargetBranches,
+		PriorityLabel:     cfg.PriorityLabel,
+		PRHeadDiagnostics: cfg.PRHeadDiagnostics,
 		FailureDetails: failure.Options{
 			Enabled:  cfg.FailureDetails,
 			LogLines: cfg.FailureLogLines,
@@ -237,6 +238,7 @@ func run() error {
 	mux.Handle("GET /api/events/summary", web.EventSummaryHandler(queueSvc, repoID))
 	mux.Handle("GET /api/v1/repos/{forge}/{owner}/{name}/events", web.EventsHandler(queueSvc, repoID))
 	mux.Handle("GET /api/v1/repos/{forge}/{owner}/{name}/queue", web.QueueHandler(queueSvc, repoID))
+	mux.Handle("GET /api/v1/repos/{forge}/{owner}/{name}/head-failures", web.HeadFailuresHandler(queueSvc, repoID, cfg.PRHeadDiagnostics))
 	if metricsReg != nil {
 		mux.Handle("GET /metrics", metricsReg)
 	}
@@ -257,14 +259,15 @@ func run() error {
 
 	// Dashboard — uses registry for dynamic repo listing.
 	webDeps := &web.Deps{
-		Queue:            queueSvc,
-		Repos:            reg,
-		Forges:           forges,
-		FallbackChecks:   cfg.RequiredChecks,
-		ChecksFromConfig: cfg.ChecksFromConfig,
-		MergeChecks:      cfg.MergeRequiredChecks,
-		RefreshInterval:  int(cfg.RefreshInterval.Seconds()),
-		BasePath:         cfg.BasePath,
+		PRHeadDiagnostics: cfg.PRHeadDiagnostics,
+		Queue:             queueSvc,
+		Repos:             reg,
+		Forges:            forges,
+		FallbackChecks:    cfg.RequiredChecks,
+		ChecksFromConfig:  cfg.ChecksFromConfig,
+		MergeChecks:       cfg.MergeRequiredChecks,
+		RefreshInterval:   int(cfg.RefreshInterval.Seconds()),
+		BasePath:          cfg.BasePath,
 	}
 	dashMux := web.NewMux(webDeps)
 	// Mount dashboard routes — the web mux handles /, /repo/, /static/.

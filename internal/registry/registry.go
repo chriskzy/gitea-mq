@@ -57,7 +57,8 @@ type Deps struct {
 	// edits), for tokens without repo admin rights.
 	SkipSetup bool
 	// FailureDetails: see monitor.Deps.
-	FailureDetails failure.Options
+	FailureDetails    failure.Options
+	PRHeadDiagnostics bool
 	// Retry is copied per repo with its own Tracker.
 	Retry retry.Policy
 	// Approval: see poller.Deps. Its FromConfig is filled from
@@ -194,17 +195,21 @@ func (r *RepoRegistry) Add(ctx context.Context, ref forge.RepoRef) error {
 		monDeps.Batch = batchEngine
 	}
 
+	heads := &failure.HeadTracker{}
 	managed := &ManagedRepo{
 		Ref:    ref,
 		RepoID: repo.ID,
 		Monitor: &webhook.RepoMonitor{
-			Deps:        monDeps,
-			TriggerPoll: triggerPoll,
+			Deps:           monDeps,
+			TriggerPoll:    triggerPoll,
+			DiagnosisHeads: heads,
 		},
 		cancel: cancel,
 	}
 
 	pollerDeps := &poller.Deps{
+		PRHeadDiagnostics:   r.deps.PRHeadDiagnostics,
+		DiagnosisHeads:      heads,
 		Forge:               f,
 		Queue:               r.deps.Queue,
 		RepoID:              repo.ID,

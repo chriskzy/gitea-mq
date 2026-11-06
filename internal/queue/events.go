@@ -34,6 +34,8 @@ const (
 	// EventReviewConflict: the approval gate saw conflicting reviews at a
 	// PR head. Recorded once per head.
 	EventReviewConflict EventKind = "review_conflict"
+	// EventPRHeadFailed is an advisory pre-admission CI diagnosis.
+	EventPRHeadFailed EventKind = "pr_head_failed"
 )
 
 // Event is one queue transition. Zero PRNumber/BatchID are stored as NULL.

@@ -47,7 +47,9 @@ type Deps struct {
 	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
 	MergeChecks *[]string
 	// FailureDetails: see monitor.Deps.
-	FailureDetails failure.Options
+	FailureDetails    failure.Options
+	PRHeadDiagnostics bool
+	DiagnosisHeads    *failure.HeadTracker
 	// Retry: see monitor.Deps.
 	Retry retry.Policy
 	// MergeLabel enqueues labeled PRs (stack-aware on GitHub); empty disables.
@@ -96,6 +98,8 @@ type Deps struct {
 	hintedSHAs map[string]bool
 	// blockedStatus: head SHA -> last "blocked"/"draft" description posted.
 	blockedStatus map[string]string
+	// diagnosisOffset rotates bounded read-only observations across all PRs.
+	diagnosisOffset int
 }
 
 func (d *Deps) now() time.Time {
@@ -267,6 +271,7 @@ func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 	startQueuedHeads(ctx, deps, result)
 	pollMergeBranchChecks(ctx, deps, result)
 	syncStateLabels(ctx, deps, result, openPRs)
+	observeHeadFailures(ctx, deps, result, openPRs)
 
 	return result, nil
 }
