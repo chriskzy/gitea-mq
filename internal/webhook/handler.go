@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Mic92/gitea-mq/internal/failure"
 	"github.com/Mic92/gitea-mq/internal/forge"
 	"github.com/Mic92/gitea-mq/internal/monitor"
 	"github.com/Mic92/gitea-mq/internal/queue"
@@ -20,7 +21,8 @@ import (
 
 // RepoMonitor holds the per-repo deps webhook handlers need to route events.
 type RepoMonitor struct {
-	Deps *monitor.Deps
+	Deps           *monitor.Deps
+	DiagnosisHeads *failure.HeadTracker
 	// TriggerPoll fires an immediate reconcile of the repo's poller. Used
 	// for PR-level webhooks (auto-merge toggle, close, push) where the
 	// poller already owns the correct enqueue/dequeue logic.
@@ -110,8 +112,8 @@ func Handler(secret string, repos RepoLookup, queueSvc *queue.Service) http.Hand
 			Description: event.Description,
 			TargetURL:   event.TargetURL,
 		}
-		routeCheck(r.Context(), rm, queueSvc, event.SHA, event.Context, check)
-		maybeTriggerPoll(rm, check.State)
+		matched := routeCheck(r.Context(), rm, queueSvc, event.SHA, event.Context, check)
+		maybeTriggerPoll(rm, check.State, event.SHA, matched)
 		w.WriteHeader(http.StatusOK)
 	})
 }
@@ -163,17 +165,18 @@ func handlePREvent(w http.ResponseWriter, body []byte, repos RepoLookup, kind st
 // SHA to a testing queue entry, mirror onto the PR head, and feed the monitor.
 // Returning 200 even on internal errors avoids forge retries causing duplicate
 // processing.
-func routeCheck(ctx context.Context, rm *RepoMonitor, svc *queue.Service, sha, checkCtx string, c forge.Check) {
+func routeCheck(ctx context.Context, rm *RepoMonitor, svc *queue.Service, sha, checkCtx string, c forge.Check) bool {
 	// The forge may close the request early; keep processing anyway.
 	ctx = context.WithoutCancel(ctx)
 	entry := findEntryForCommit(ctx, svc, rm.Deps.RepoID, sha)
 	if entry == nil {
-		return
+		return false
 	}
 
 	if err := monitor.ApplyCheck(ctx, rm.Deps, entry, checkCtx, c); err != nil {
 		slog.Error("failed to process check status", "pr", entry.PrNumber, "err", err)
 	}
+	return true
 }
 
 // statusEvent is the subset of Gitea's commit_status webhook payload we need.

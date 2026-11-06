@@ -70,8 +70,8 @@ func GithubHandler(secret []byte, repos RepoLookup, queueSvc *queue.Service, tri
 				Description: cr.GetOutput().GetSummary(),
 				TargetURL:   cr.GetDetailsURL(),
 			}
-			routeCheck(r.Context(), rm, queueSvc, cr.GetHeadSHA(), cr.GetName(), check)
-			maybeTriggerPoll(rm, check.State)
+			matched := routeCheck(r.Context(), rm, queueSvc, cr.GetHeadSHA(), cr.GetName(), check)
+			maybeTriggerPoll(rm, check.State, cr.GetHeadSHA(), matched)
 
 		case *gh.StatusEvent:
 			if forge.IsOwnContext(e.GetContext()) {
@@ -86,8 +86,8 @@ func GithubHandler(secret []byte, repos RepoLookup, queueSvc *queue.Service, tri
 				Description: e.GetDescription(),
 				TargetURL:   e.GetTargetURL(),
 			}
-			routeCheck(r.Context(), rm, queueSvc, e.GetSHA(), e.GetContext(), check)
-			maybeTriggerPoll(rm, check.State)
+			matched := routeCheck(r.Context(), rm, queueSvc, e.GetSHA(), e.GetContext(), check)
+			maybeTriggerPoll(rm, check.State, e.GetSHA(), matched)
 
 		case *gh.InstallationEvent, *gh.InstallationRepositoriesEvent:
 			if triggerDiscovery != nil {
@@ -101,8 +101,8 @@ func GithubHandler(secret []byte, repos RepoLookup, queueSvc *queue.Service, tri
 
 // Diagnostics need failures and recovery as well as admission's green signal.
 // TriggerPoll is coalesced by the registry's buffered notification channel.
-func maybeTriggerPoll(rm *RepoMonitor, state pg.CheckState) {
-	diagnose := rm.Deps != nil && rm.Deps.FailureDetails.Enabled
+func maybeTriggerPoll(rm *RepoMonitor, state pg.CheckState, sha string, matched bool) {
+	diagnose := !matched && rm.DiagnosisHeads.Contains(sha)
 	if (state == pg.CheckStateSuccess || diagnose) && rm.TriggerPoll != nil {
 		rm.TriggerPoll()
 	}

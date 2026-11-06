@@ -50,8 +50,12 @@ func groupDiagnoses(heads []queue.HeadDiagnosis) []diagnosisGroup {
 
 // HeadFailuresHandler serves current observed failures, including PRs that
 // have no merge intent. Historical observations remain in /api/events.
-func HeadFailuresHandler(svc *queue.Service, repos RepoIDLookup) http.HandlerFunc {
+func HeadFailuresHandler(svc *queue.Service, repos RepoIDLookup, enabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !enabled {
+			http.NotFound(w, r)
+			return
+		}
 		key := repoKey(r)
 		id, ok := repos(key)
 		if !ok {

@@ -52,7 +52,7 @@ func TestPreAdmissionDiagnosesAreGroupedDurableAndInvalidated(t *testing.T) {
 		}
 		return map[string]forge.Check{"ci/unit": {State: state, Description: "failed", TargetURL: "https://ci/" + sha}}, nil
 	}
-	deps := &poller.Deps{Forge: f, Queue: svc, RepoID: repoID, Owner: "org", Repo: "app", ChecksFromConfig: true, FallbackChecks: []string{"ci/unit"}, FailureDetails: failure.Options{Enabled: true, LogLines: 20, Secrets: []string{"supersecret"}}}
+	deps := &poller.Deps{Forge: f, Queue: svc, RepoID: repoID, Owner: "org", Repo: "app", ChecksFromConfig: true, FallbackChecks: []string{"ci/unit"}, PRHeadDiagnostics: true, DiagnosisHeads: &failure.HeadTracker{}, FailureDetails: failure.Options{LogLines: 20, Secrets: []string{"supersecret"}}}
 	poll := func() {
 		t.Helper()
 		r, err := poller.PollOnce(ctx, deps)
@@ -63,7 +63,7 @@ func TestPreAdmissionDiagnosesAreGroupedDurableAndInvalidated(t *testing.T) {
 			t.Fatal("observation enqueued PR without intent")
 		}
 	}
-	api := web.HeadFailuresHandler(svc, func(key string) (int64, bool) { return repoID, key == "gitea:org/app" })
+	api := web.HeadFailuresHandler(svc, func(key string) (int64, bool) { return repoID, key == "gitea:org/app" }, true)
 	get := func() map[string]any {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -82,7 +82,8 @@ func TestPreAdmissionDiagnosesAreGroupedDurableAndInvalidated(t *testing.T) {
 	}
 	// An unmatched PR-head status must wake diagnosis before queue admission.
 	triggered := 0
-	hook := webhook.Handler("hook-secret", webhook.MapRepoLookup{"gitea:org/app": &webhook.RepoMonitor{Deps: &monitor.Deps{RepoID: repoID, FailureDetails: deps.FailureDetails}, TriggerPoll: func() { triggered++; poll() }}}, svc)
+	deps.DiagnosisHeads.Update(prs)
+	hook := webhook.Handler("hook-secret", webhook.MapRepoLookup{"gitea:org/app": &webhook.RepoMonitor{Deps: &monitor.Deps{RepoID: repoID, FailureDetails: deps.FailureDetails}, DiagnosisHeads: deps.DiagnosisHeads, TriggerPoll: func() { triggered++; poll() }}}, svc)
 	postStatus := func(check string) {
 		t.Helper()
 		body := `{"sha":"head1","context":"` + check + `","state":"failure","repository":{"full_name":"org/app"}}`
@@ -109,7 +110,7 @@ func TestPreAdmissionDiagnosesAreGroupedDurableAndInvalidated(t *testing.T) {
 		t.Fatalf("group=%v", g)
 	}
 	dashboard := httptest.NewRecorder()
-	web.NewMux(&web.Deps{Queue: svc, Repos: diagnosisRepos{}}).ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/repo/gitea/org/app", nil))
+	web.NewMux(&web.Deps{Queue: svc, PRHeadDiagnostics: true, Repos: diagnosisRepos{}}).ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/repo/gitea/org/app", nil))
 	for _, want := range []string{"PR head CI failures", "TestThing", "source", "head1"} {
 		if dashboard.Code != 200 || !strings.Contains(dashboard.Body.String(), want) {
 			t.Fatalf("dashboard missing %q: %d %s", want, dashboard.Code, dashboard.Body.String())
@@ -188,7 +189,7 @@ func TestDiagnosisObservationBudgetRotates(t *testing.T) {
 	f := &forge.MockForge{ListOpenPRsFn: func(context.Context, string, string) ([]forge.PR, error) { return prs, nil }, GetCheckStatesFn: func(context.Context, string, string, string) (map[string]forge.Check, error) {
 		return map[string]forge.Check{"ci": {State: pg.CheckStateFailure}}, nil
 	}}
-	d := &poller.Deps{Forge: f, Queue: svc, RepoID: repoID, Owner: "org", Repo: "app", TargetBranches: []string{"main"}, ChecksFromConfig: true, FailureDetails: failure.Options{Enabled: true}}
+	d := &poller.Deps{Forge: f, Queue: svc, RepoID: repoID, Owner: "org", Repo: "app", TargetBranches: []string{"main"}, ChecksFromConfig: true, PRHeadDiagnostics: true, DiagnosisHeads: &failure.HeadTracker{}, FailureDetails: failure.Options{Enabled: true}}
 	for i := range 3 {
 		r, err := poller.PollOnce(ctx, d)
 		if err != nil || len(r.Errors) > 0 {
@@ -201,5 +202,88 @@ func TestDiagnosisObservationBudgetRotates(t *testing.T) {
 	heads, err := svc.HeadDiagnoses(ctx, repoID)
 	if err != nil || len(heads) != 23 {
 		t.Fatalf("rotation starved PRs: %d %v", len(heads), err)
+	}
+}
+
+func TestLegacyFailureDetailsDoesNotPublishOrObservePRHeads(t *testing.T) {
+	svc, ctx, id := testutil.TestQueueService(t)
+	f := &forge.MockForge{ListOpenPRsFn: func(context.Context, string, string) ([]forge.PR, error) {
+		return []forge.PR{{Number: 1, HeadSHA: "head", BaseBranch: "main"}}, nil
+	}}
+	d := &poller.Deps{Forge: f, Queue: svc, RepoID: id, Owner: "org", Repo: "app", FailureDetails: failure.Options{Enabled: true}}
+	r, err := poller.PollOnce(ctx, d)
+	if err != nil || len(r.Errors) > 0 || len(f.CallsTo("GetCheckStates")) != 0 {
+		t.Fatalf("legacy flag added observation: %+v %v", r, err)
+	}
+	_, err = svc.SaveHeadDiagnosis(ctx, id, queue.HeadDiagnosis{PR: 1, HeadSHA: "head", TargetBranch: "main", Failures: []failure.Diagnosis{{Check: failure.Check{Context: "private-ci-content"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	web.HeadFailuresHandler(svc, func(string) (int64, bool) { return id, true }, false).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/head-failures", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("disabled endpoint public: %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	web.NewMux(&web.Deps{Queue: svc, Repos: diagnosisRepos{}}).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/repo/gitea/org/app", nil))
+	if strings.Contains(w.Body.String(), "private-ci-content") {
+		t.Fatal("disabled dashboard exposed retained CI content")
+	}
+}
+
+func TestDiagnosisExcludesDraftAndExplicitlyUngatedHeads(t *testing.T) {
+	for _, ungated := range []bool{false, true} {
+		svc, ctx, id := testutil.TestQueueService(t)
+		pr := forge.PR{Number: 1, HeadSHA: "head", BaseBranch: "main", Draft: !ungated}
+		f := &forge.MockForge{ListOpenPRsFn: func(context.Context, string, string) ([]forge.PR, error) { return []forge.PR{pr}, nil }}
+		heads := &failure.HeadTracker{}
+		d := &poller.Deps{Forge: f, Queue: svc, RepoID: id, Owner: "org", Repo: "app", PRHeadDiagnostics: true, DiagnosisHeads: heads}
+		if ungated {
+			empty := []string{}
+			d.PRChecks = &empty
+		}
+		if _, err := poller.PollOnce(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.CallsTo("GetCheckStates")) != 0 || heads.Contains("head") {
+			t.Fatal("ineligible head observed or allowed webhook wakeup")
+		}
+	}
+}
+
+func TestDiagnosisRunsAfterMergeBranchCheckProcessing(t *testing.T) {
+	svc, ctx, id := testutil.TestQueueService(t)
+	queued := forge.PR{Number: 42, HeadSHA: "head42", BaseBranch: "main", AutoMergeEnabled: true}
+	failed := forge.PR{Number: 1, HeadSHA: "failed-head", BaseBranch: "main"}
+	mergeObserved := false
+	f := &forge.MockForge{ListOpenPRsFn: func(context.Context, string, string) ([]forge.PR, error) { return []forge.PR{queued, failed}, nil }, GetPRFn: func(context.Context, string, string, int64) (*forge.PR, error) { return &queued, nil }}
+	f.GetCheckStatesFn = func(_ context.Context, _, _, sha string) (map[string]forge.Check, error) {
+		if sha == "merge-sha" {
+			mergeObserved = true
+			return map[string]forge.Check{"ci": {State: pg.CheckStatePending}}, nil
+		}
+		if sha == "failed-head" && !mergeObserved {
+			t.Fatal("diagnosis preceded merge-branch check processing")
+		}
+		return map[string]forge.Check{"ci": {State: pg.CheckStateFailure}}, nil
+	}
+	testutil.EnqueueTesting(t, svc, id, 42, "head42", "merge-sha")
+	r, err := poller.PollOnce(ctx, &poller.Deps{Forge: f, Queue: svc, RepoID: id, Owner: "org", Repo: "app", ChecksFromConfig: true, PRHeadDiagnostics: true})
+	if err != nil || len(r.Errors) > 0 || !mergeObserved {
+		t.Fatalf("poll=%+v err=%v mergeObserved=%v", r, err, mergeObserved)
+	}
+}
+
+func TestOpenHeadsDoNotDisableIdleGating(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		svc, ctx, id := testutil.TestQueueService(t)
+		f := &forge.MockForge{ListOpenPRsFn: func(context.Context, string, string) ([]forge.PR, error) {
+			return []forge.PR{{Number: 1, HeadSHA: "head", BaseBranch: "main"}}, nil
+		}}
+		d := &poller.Deps{Forge: f, Queue: svc, RepoID: id, Owner: "org", Repo: "app", IdleGating: true, ChecksFromConfig: true, PRHeadDiagnostics: enabled, FailureDetails: failure.Options{Enabled: true}}
+		runPollerTicks(ctx, d, 5)
+		if n := len(f.CallsTo("ListOpenPRs")); n != 1 {
+			t.Fatalf("diagnostics=%v idle list reads=%d", enabled, n)
+		}
 	}
 }

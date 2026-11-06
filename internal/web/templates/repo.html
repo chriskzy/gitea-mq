@@ -58,6 +58,7 @@
             {{if .Evidence}}<pre>{{.Evidence}}</pre>{{end}}
             {{range .Members}}<p><a href="{{$.BasePath}}/repo/{{$.Forge}}/{{$.Owner}}/{{$.Name}}/pr/{{.PR}}">PR #{{.PR}}</a> · <code>{{.HeadSHA}}</code> · observed {{relativeTime .ObservedAt}}{{if .Stale}} · stale observation{{end}}{{if .ObservationError}} · {{.ObservationError}}{{end}}</p>{{end}}
             {{if .LogError}}<p>{{.LogError}}</p>{{end}}
+            {{if .EvidenceLimited}}<p>Limited evidence: no retained job log. Matching failures may appear in separate groups until comparable evidence is available.</p>{{end}}
             {{if .TargetURL}}<p><a href="{{.TargetURL}}">Representative failing check ↗</a></p>{{end}}
             {{if .LogTail}}<pre>{{range .LogTail}}{{.}}
 {{end}}</pre>{{end}}

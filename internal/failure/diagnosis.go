@@ -10,16 +10,17 @@ import (
 // Diagnosis is advisory evidence, never an admission or retry decision.
 type Diagnosis struct {
 	Check
-	Classification string `json:"classification"`
-	Fingerprint    string `json:"fingerprint"`
-	Test           string `json:"test,omitempty"`
-	Evidence       string `json:"evidence,omitempty"`
+	Classification  string `json:"classification"`
+	Fingerprint     string `json:"fingerprint"`
+	Test            string `json:"test,omitempty"`
+	Evidence        string `json:"evidence,omitempty"`
+	EvidenceLimited bool   `json:"evidence_limited"`
 }
 
-var failedTest = regexp.MustCompile(`(?:--- FAIL: ([^\s(]+)|FAILED ([^\s]+)|Test Case '([^']+)' failed)`)
+var failedTest = regexp.MustCompile(`(?:--- FAIL: ([^\s(]+)|(?:^|\s)FAILED ([A-Za-z0-9_./\-]+::[^\s]+)|Test Case '([^']+)' failed)`)
 var assertion = regexp.MustCompile(`(?i)(assertion(?:error| failed| failure)|assert(?:equal|true|false|that)\b|expected .+ (?:got|but|actual)|error: .+:[0-9]+: .+ failed)`)
 var timestamp = regexp.MustCompile(`\b\d{4}-\d\d-\d\d[T ][0-9:.]+Z?\s*`)
-var duration = regexp.MustCompile(`\([0-9.]+s\)`)
+var duration = regexp.MustCompile(`(?:\([0-9.]+s\)|\bin [0-9.]+s\b)`)
 var workspace = regexp.MustCompile(`/(?:home/runner/work|workspace|github/workspace|Users/[^/]+/dev)/`)
 
 // Diagnose groups matching failure evidence across PRs. Unknown is intentional:
@@ -27,7 +28,7 @@ var workspace = regexp.MustCompile(`/(?:home/runner/work|workspace|github/worksp
 func Diagnose(checks []Check, infrastructure []*regexp.Regexp) []Diagnosis {
 	out := make([]Diagnosis, 0, len(checks))
 	for _, c := range checks {
-		d := Diagnosis{Check: c, Classification: "unknown"}
+		d := Diagnosis{Check: c, Classification: "unknown", EvidenceLimited: len(c.LogTail) == 0}
 		lines := append([]string{c.Description}, c.LogTail...)
 		for _, line := range lines {
 			if m := failedTest.FindStringSubmatch(line); m != nil {

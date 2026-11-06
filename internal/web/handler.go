@@ -173,10 +173,11 @@ type RepoLister interface {
 
 // Deps holds the dependencies the web handlers need.
 type Deps struct {
-	Queue          *queue.Service
-	Repos          RepoLister
-	Forges         *forge.Set
-	FallbackChecks []string // from GITEA_MQ_REQUIRED_CHECKS
+	Queue             *queue.Service
+	PRHeadDiagnostics bool
+	Repos             RepoLister
+	Forges            *forge.Set
+	FallbackChecks    []string // from GITEA_MQ_REQUIRED_CHECKS
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
 	// MergeChecks, when non-nil, replaces the required checks on merge
@@ -325,11 +326,13 @@ func serveRepoDetail(w http.ResponseWriter, r *http.Request, deps *Deps, ref for
 		Name:            name,
 		RefreshInterval: deps.RefreshInterval,
 	}
-	heads, err := deps.Queue.HeadDiagnoses(ctx, repo.ID)
-	if err != nil {
-		slog.Warn("list PR head diagnoses", "error", err)
-	} else {
-		data.HeadFailures = groupDiagnoses(heads)
+	if deps.PRHeadDiagnostics {
+		heads, err := deps.Queue.HeadDiagnoses(ctx, repo.ID)
+		if err != nil {
+			slog.Warn("list PR head diagnoses", "error", err)
+		} else {
+			data.HeadFailures = groupDiagnoses(heads)
+		}
 	}
 	f := forgeFor(deps, ref)
 	if f != nil {

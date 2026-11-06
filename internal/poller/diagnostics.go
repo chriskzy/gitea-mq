@@ -18,21 +18,24 @@ import (
 // These observations never enqueue, retry, comment, or set a commit status.
 // At most ten PR head reads and thirty log reads are added per reconcile.
 func observeHeadFailures(ctx context.Context, deps *Deps, result *PollResult, prs []forge.PR) {
-	if !deps.FailureDetails.Enabled {
+	if !deps.PRHeadDiagnostics {
 		return
 	}
+	// Advisory I/O runs after queue work and cannot monopolize the next tick.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	admitted := make([]forge.PR, 0, len(prs))
 	for _, pr := range prs {
-		if len(deps.TargetBranches) == 0 || slices.Contains(deps.TargetBranches, pr.BaseBranch) {
+		if !pr.Draft && (deps.PRChecks == nil || len(*deps.PRChecks) > 0) && (len(deps.TargetBranches) == 0 || slices.Contains(deps.TargetBranches, pr.BaseBranch)) {
 			admitted = append(admitted, pr)
 		}
 	}
+	deps.DiagnosisHeads.Update(admitted)
 	if err := deps.Queue.PruneHeadDiagnoses(ctx, deps.RepoID, admitted); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("invalidate PR head diagnoses: %w", err))
 		return
 	}
 	prs = admitted
-	deps.diagnosisOpen = len(prs) > 0
 	old, err := deps.Queue.HeadDiagnoses(ctx, deps.RepoID)
 	if err != nil {
 		result.Errors = append(result.Errors, err)
@@ -60,6 +63,10 @@ func observeHeadFailures(ctx context.Context, deps *Deps, result *PollResult, pr
 	start := deps.diagnosisOffset % len(prs)
 	deps.diagnosisOffset = (start + n) % len(prs)
 	for i := range n {
+		if ctx.Err() != nil {
+			result.Errors = append(result.Errors, ctx.Err())
+			return
+		}
 		pr := prs[(start+i)%len(prs)]
 		if deps.PRChecks != nil && len(*deps.PRChecks) == 0 {
 			_ = deps.Queue.ClearHeadDiagnosis(ctx, deps.RepoID, pr.Number, pr.HeadSHA)
@@ -78,8 +85,9 @@ func observeHeadFailures(ctx context.Context, deps *Deps, result *PollResult, pr
 			continue
 		}
 		opts := deps.FailureDetails
+		opts.Enabled = true
 		opts.LogLines = 0
-		checks := failure.CollectStates(ctx, opts, deps.Forge, deps.Owner, deps.Repo, states, required)
+		checks := failure.CollectDiagnosticStates(ctx, opts, deps.Forge, deps.Owner, deps.Repo, states, required)
 		if len(checks) == 0 {
 			if err := deps.Queue.ClearHeadDiagnosis(ctx, deps.RepoID, pr.Number, pr.HeadSHA); err != nil {
 				result.Errors = append(result.Errors, err)
@@ -92,7 +100,8 @@ func observeHeadFailures(ctx context.Context, deps *Deps, result *PollResult, pr
 		if d := byPR[pr.Number]; d.HeadSHA == pr.HeadSHA && d.Signature == signature && d.ObservationError == "" && deps.now().Sub(d.ObservedAt) < 15*time.Minute {
 			continue
 		}
-		checks = failure.CollectStates(ctx, deps.FailureDetails, deps.Forge, deps.Owner, deps.Repo, states, required)
+		opts.LogLines = deps.FailureDetails.LogLines
+		checks = failure.CollectDiagnosticStates(ctx, opts, deps.Forge, deps.Owner, deps.Repo, states, required)
 		d := queue.HeadDiagnosis{PR: pr.Number, HeadSHA: pr.HeadSHA, TargetBranch: pr.BaseBranch, Signature: signature, Failures: failure.Diagnose(checks, deps.Retry.Patterns)}
 		changed, err := deps.Queue.SaveHeadDiagnosis(ctx, deps.RepoID, d)
 		if err != nil {

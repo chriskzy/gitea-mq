@@ -62,8 +62,17 @@ func Collect(ctx context.Context, opts Options, f forge.Forge, owner, repo, sha 
 }
 
 // CollectStates reuses an already observed head's checks, avoiding another API
-// read. Log collection has the same limits and redaction as Collect.
+// read. Log collection preserves the ejection contract of Collect.
 func CollectStates(ctx context.Context, opts Options, f forge.Forge, owner, repo string, states map[string]forge.Check, required []string) []Check {
+	return collectStates(ctx, opts, f, owner, repo, states, required, false)
+}
+
+// CollectDiagnosticStates applies limits only to public PR-head diagnoses.
+func CollectDiagnosticStates(ctx context.Context, opts Options, f forge.Forge, owner, repo string, states map[string]forge.Check, required []string) []Check {
+	return collectStates(ctx, opts, f, owner, repo, states, required, true)
+}
+
+func collectStates(ctx context.Context, opts Options, f forge.Forge, owner, repo string, states map[string]forge.Check, required []string, diagnostic bool) []Check {
 	if !opts.Enabled {
 		return nil
 	}
@@ -77,16 +86,24 @@ func CollectStates(ctx context.Context, opts Options, f forge.Forge, owner, repo
 			continue
 		}
 		out = append(out, Check{
-			Context: bounded(red.apply(name), maxLineLen), State: string(c.State),
-			Description: bounded(red.apply(c.Description), maxLineLen), TargetURL: bounded(red.apply(c.TargetURL), 2048),
+			Context: red.apply(name), State: string(c.State),
+			Description: red.apply(c.Description), TargetURL: red.apply(c.TargetURL),
 		})
 	}
 	slices.SortFunc(out, func(a, b Check) int { return strings.Compare(a.Context, b.Context) })
-	out = out[:min(len(out), 30)]
+	if diagnostic {
+		out = out[:min(len(out), 30)]
+		for i := range out {
+			out[i].Context = bounded(out[i].Context, maxLineLen)
+			out[i].Description = bounded(out[i].Description, maxLineLen)
+			out[i].TargetURL = bounded(out[i].TargetURL, 2048)
+		}
+		opts.LogLines = min(opts.LogLines, 200)
+	}
 
 	lf, ok := f.(forge.JobLogFetcher)
 	if !ok || opts.LogLines <= 0 {
-		if opts.LogLines > 0 {
+		if diagnostic && opts.LogLines > 0 {
 			for i := range out {
 				out[i].LogError = "Job logs unavailable on this forge"
 			}
@@ -99,14 +116,19 @@ func CollectStates(ctx context.Context, opts Options, f forge.Forge, owner, repo
 		}
 		job, log, err := lf.JobLog(ctx, owner, repo, out[i].TargetURL)
 		if err != nil {
-			out[i].LogError = "Job log unavailable"
+			if diagnostic && err != forge.ErrNoJob {
+				out[i].LogError = "Job log unavailable"
+			}
 			if err != forge.ErrNoJob {
 				slog.Warn("failure details: fetch job log failed", "check", out[i].Context, "error", err)
 			}
 			continue
 		}
-		out[i].Job = bounded(red.apply(job), maxLineLen)
-		out[i].LogTail = Tail([]byte(red.apply(string(log))), min(opts.LogLines, 200))
+		out[i].Job = red.apply(job)
+		if diagnostic {
+			out[i].Job = bounded(out[i].Job, maxLineLen)
+		}
+		out[i].LogTail = Tail([]byte(red.apply(string(log))), opts.LogLines)
 	}
 	return out
 }

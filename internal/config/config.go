@@ -48,6 +48,8 @@ type Config struct {
 	EventRetention time.Duration
 	// FailureDetails posts failing checks and job log tails on ejection.
 	FailureDetails bool
+	// PRHeadDiagnostics publishes eligible open PR CI evidence on the public dashboard/API.
+	PRHeadDiagnostics bool
 	// InfraRetryPatterns are regexes for failures that are rerun instead of
 	// ejecting; InfraRetryMax caps reruns per tested SHA.
 	InfraRetryPatterns []*regexp.Regexp
@@ -296,6 +298,10 @@ func Load() (*Config, error) {
 		}
 	}
 
+	cfg.PRHeadDiagnostics, err = parseBool("GITEA_MQ_PR_HEAD_DIAGNOSTICS", false)
+	if err != nil {
+		return nil, err
+	}
 	cfg.FailureDetails, err = parseBool("GITEA_MQ_FAILURE_DETAILS", false)
 	if err != nil {
 		return nil, err

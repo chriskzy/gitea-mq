@@ -64,7 +64,7 @@ and [CI configuration](docs/reference.md#ci-configuration) before enabling them.
 - [Events, queue API, and metrics](docs/reference.md#queue-events).
 - [Failure details](docs/reference.md#failure-details) and
   [bounded infrastructure retries](docs/reference.md#retrying-infrastructure-failures).
-- [PR-head failure groups](docs/pr-failure-diagnosis.md), including failures before queue admission.
+- [PR-head failure groups](docs/pr-failure-diagnosis.md): explicit `GITEA_MQ_PR_HEAD_DIAGNOSTICS=true` opt-in publishes eligible PR CI evidence on the unauthenticated dashboard/API.
 - [Approval and rejected-head recovery](docs/reference.md#approvals).
 
 See the [full configuration and operations reference](docs/reference.md) for

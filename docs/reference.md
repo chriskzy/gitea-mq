@@ -103,6 +103,7 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_NOTIFY_URL` | no | - | POST every queue event, signed, to this URL (see [Event notifications](#event-notifications)) |
 | `GITEA_MQ_NOTIFY_SECRET` / `_FILE` | with notify URL | - | HMAC secret for `X-Gitea-MQ-Signature` |
 | `GITEA_MQ_NOTIFY_EVENTS` | no | all | Comma-separated event kinds to deliver |
+| `GITEA_MQ_PR_HEAD_DIAGNOSTICS` | no | `false` | Explicitly publish redacted CI evidence for eligible non-draft PR heads on the unauthenticated dashboard/API. Independent of failure details; see [visibility and limits](pr-failure-diagnosis.md). Nix: `prHeadDiagnostics` |
 | `GITEA_MQ_FAILURE_DETAILS` | no | `false` | On ejection for a failed check, post the failing checks and (Gitea Actions) the job's log tail to the PR and the event (see [Failure details](#failure-details)) |
 | `GITEA_MQ_FAILURE_LOG_LINES` | no | `30` | Log lines per failing job; `0` = checks only, no logs |
 | `GITEA_MQ_EVENT_RETENTION` | no | `2160h` | How long queue events are kept in PostgreSQL (90 days) |

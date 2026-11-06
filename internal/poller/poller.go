@@ -47,7 +47,9 @@ type Deps struct {
 	// branches (GITEA_MQ_MERGE_REQUIRED_CHECKS).
 	MergeChecks *[]string
 	// FailureDetails: see monitor.Deps.
-	FailureDetails failure.Options
+	FailureDetails    failure.Options
+	PRHeadDiagnostics bool
+	DiagnosisHeads    *failure.HeadTracker
 	// Retry: see monitor.Deps.
 	Retry retry.Policy
 	// MergeLabel enqueues labeled PRs (stack-aware on GitHub); empty disables.
@@ -98,7 +100,6 @@ type Deps struct {
 	blockedStatus map[string]string
 	// diagnosisOffset rotates bounded read-only observations across all PRs.
 	diagnosisOffset int
-	diagnosisOpen   bool
 }
 
 func (d *Deps) now() time.Time {
@@ -261,7 +262,6 @@ func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 			}
 		}
 	}
-	observeHeadFailures(ctx, deps, result, openPRs)
 
 	enqueueAutoMergePRs(ctx, deps, result, openPRs)
 	enqueueLabeledPRs(ctx, deps, result, openPRs)
@@ -271,6 +271,7 @@ func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 	startQueuedHeads(ctx, deps, result)
 	pollMergeBranchChecks(ctx, deps, result)
 	syncStateLabels(ctx, deps, result, openPRs)
+	observeHeadFailures(ctx, deps, result, openPRs)
 
 	return result, nil
 }
@@ -1011,9 +1012,6 @@ func tryFastForwardSuccess(ctx context.Context, deps *Deps, result *PollResult, 
 // hasActiveWork reports whether the repo has live queue state. It only reads
 // the local DB, so idle repos can be skipped without spending forge API quota.
 func hasActiveWork(ctx context.Context, deps *Deps) bool {
-	if deps.FailureDetails.Enabled && deps.diagnosisOpen {
-		return true
-	}
 	entries, err := deps.Queue.ListActiveEntries(ctx, deps.RepoID)
 	if err != nil {
 		// Fail open: keep reconciling rather than stall on a transient DB error.
