@@ -37,6 +37,9 @@ Explicit assertion evidence wins when infrastructure text also appears.
 Fingerprinting keeps check/job/test identifiers and assertion content, while
 removing common timestamps, workspace prefixes and common build durations.
 Matching fingerprints are evidence for grouping, not proof of a shared cause.
+Without positive test, assertion or configured infrastructure evidence,
+fingerprints are scoped to the PR number and exact head. Generic descriptions,
+empty output and matching check URLs cannot group separate heads.
 One representative test/assertion is extracted per failing check. Gitea Actions
 supports job logs; GitHub currently supplies check descriptions only. Missing
 job-log read errors are reported by `log_error`; unavailable evidence remains unknown.

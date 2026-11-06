@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -25,7 +26,7 @@ var workspace = regexp.MustCompile(`/(?:home/runner/work|workspace|github/worksp
 
 // Diagnose groups matching failure evidence across PRs. Unknown is intentional:
 // a failed check or a generic "error" does not establish a source defect.
-func Diagnose(checks []Check, infrastructure []*regexp.Regexp) []Diagnosis {
+func Diagnose(checks []Check, infrastructure []*regexp.Regexp, number int64, head string) []Diagnosis {
 	out := make([]Diagnosis, 0, len(checks))
 	for _, c := range checks {
 		d := Diagnosis{Check: c, Classification: "unknown", EvidenceLimited: len(c.LogTail) == 0}
@@ -59,16 +60,21 @@ func Diagnose(checks []Check, infrastructure []*regexp.Regexp) []Diagnosis {
 				}
 			}
 		}
-		// Without diagnostic evidence, do not group different unknown log
-		// failures merely because their check names happen to match.
+		// Generic output cannot establish a shared failure across PR heads.
 		evidence := d.Evidence
+		scope := ""
 		if evidence == "" {
 			evidence = strings.Join(lines, "\n")
+			scope = strconv.FormatInt(number, 10) + ":" + head
 		}
 		normal := timestamp.ReplaceAllString(evidence, "")
 		normal = workspace.ReplaceAllString(normal, "<workspace>/")
 		normal = duration.ReplaceAllString(normal, "")
-		sum := sha256.Sum256([]byte(strings.Join([]string{c.Context, c.Job, d.Classification, d.Test, strings.TrimSpace(normal)}, "\x00")))
+		identity := []string{c.Context, c.Job, d.Classification, d.Test, strings.TrimSpace(normal)}
+		if scope != "" {
+			identity = append(identity, scope)
+		}
+		sum := sha256.Sum256([]byte(strings.Join(identity, "\x00")))
 		d.Fingerprint = hex.EncodeToString(sum[:16])
 		out = append(out, d)
 	}

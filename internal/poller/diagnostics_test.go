@@ -287,3 +287,63 @@ func TestOpenHeadsDoNotDisableIdleGating(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicFailureGroupsIsolateHeadsWithoutEvidence(t *testing.T) {
+	for _, description := range []string{"", "Build is failing", "AssertionError: expected 2 got 1"} {
+		svc, ctx, id := testutil.TestQueueService(t)
+		f := &forge.MockForge{ListOpenPRsFn: func(context.Context, string, string) ([]forge.PR, error) {
+			return []forge.PR{{Number: 1, HeadSHA: "first", BaseBranch: "main"}, {Number: 2, HeadSHA: "second", BaseBranch: "main"}}, nil
+		}, GetCheckStatesFn: func(context.Context, string, string, string) (map[string]forge.Check, error) {
+			return map[string]forge.Check{"ci": {State: pg.CheckStateFailure, Description: description}}, nil
+		}}
+		r, err := poller.PollOnce(ctx, &poller.Deps{Forge: f, Queue: svc, RepoID: id, Owner: "org", Repo: "app", ChecksFromConfig: true, PRHeadDiagnostics: true})
+		if err != nil || len(r.Errors) > 0 {
+			t.Fatalf("%+v %v", r, err)
+		}
+		w := httptest.NewRecorder()
+		web.HeadFailuresHandler(svc, func(string) (int64, bool) { return id, true }, true).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/head-failures", nil))
+		var body struct {
+			Groups []struct {
+				Fingerprint string `json:"fingerprint"`
+				Count       int    `json:"count"`
+			} `json:"groups"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != 200 {
+			t.Fatalf("API %d %s %v", w.Code, w.Body.String(), err)
+		}
+		if strings.HasPrefix(description, "AssertionError") {
+			if len(body.Groups) != 1 || body.Groups[0].Count != 2 {
+				t.Fatalf("affirmative evidence did not group: %+v", body)
+			}
+		} else if len(body.Groups) != 2 || body.Groups[0].Fingerprint == body.Groups[1].Fingerprint || body.Groups[0].Count != 1 || body.Groups[1].Count != 1 {
+			t.Fatalf("evidence-free heads grouped: %+v", body)
+		}
+	}
+}
+
+func TestDiagnosisRotationResumesAfterDeadline(t *testing.T) {
+	svc, ctx, id := testutil.TestQueueService(t)
+	prs := []forge.PR{{Number: 1, HeadSHA: "first", BaseBranch: "main"}, {Number: 2, HeadSHA: "second", BaseBranch: "main"}, {Number: 3, HeadSHA: "third", BaseBranch: "main"}}
+	var attempted []string
+	slow := true
+	f := &forge.MockForge{ListOpenPRsFn: func(context.Context, string, string) ([]forge.PR, error) { return prs, nil }, GetCheckStatesFn: func(ctx context.Context, _, _, head string) (map[string]forge.Check, error) {
+		attempted = append(attempted, head)
+		if slow {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return map[string]forge.Check{}, nil
+	}}
+	d := &poller.Deps{Forge: f, Queue: svc, RepoID: id, Owner: "org", Repo: "app", ChecksFromConfig: true, PRHeadDiagnostics: true}
+	deadline, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	r, err := poller.PollOnce(deadline, d)
+	if err != nil || len(r.Errors) == 0 || len(attempted) != 1 || attempted[0] != "first" {
+		t.Fatalf("deadline poll=%+v err=%v attempted=%v", r, err, attempted)
+	}
+	slow = false
+	r, err = poller.PollOnce(ctx, d)
+	if err != nil || len(r.Errors) > 0 || len(attempted) < 2 || attempted[1] != "second" {
+		t.Fatalf("rotation restarted/starved tail: %+v %v %v", r, err, attempted)
+	}
+}

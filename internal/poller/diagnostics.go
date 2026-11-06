@@ -61,17 +61,15 @@ func observeHeadFailures(ctx context.Context, deps *Deps, result *PollResult, pr
 	})
 	n := min(len(prs), 10)
 	start := deps.diagnosisOffset % len(prs)
-	deps.diagnosisOffset = (start + n) % len(prs)
+	attempted := 0
+	defer func() { deps.diagnosisOffset = (start + attempted) % len(prs) }()
 	for i := range n {
 		if ctx.Err() != nil {
 			result.Errors = append(result.Errors, ctx.Err())
 			return
 		}
 		pr := prs[(start+i)%len(prs)]
-		if deps.PRChecks != nil && len(*deps.PRChecks) == 0 {
-			_ = deps.Queue.ClearHeadDiagnosis(ctx, deps.RepoID, pr.Number, pr.HeadSHA)
-			continue
-		}
+		attempted++
 		required, err := monitor.ResolveCheckList(ctx, deps.Forge, deps.Owner, deps.Repo, pr.BaseBranch, deps.PRChecks, deps.FallbackChecks, deps.ChecksFromConfig)
 		if err != nil {
 			_ = deps.Queue.MarkHeadDiagnosisUnavailable(ctx, deps.RepoID, pr.Number, pr.HeadSHA)
@@ -95,14 +93,15 @@ func observeHeadFailures(ctx context.Context, deps *Deps, result *PollResult, pr
 			continue
 		}
 		raw, _ := json.Marshal(checks)
-		sum := sha256.Sum256(raw)
+		// Recompute retained v1 fingerprints under the conservative head scope.
+		sum := sha256.Sum256(append([]byte("head-diagnosis-v2\x00"), raw...))
 		signature := hex.EncodeToString(sum[:])
 		if d := byPR[pr.Number]; d.HeadSHA == pr.HeadSHA && d.Signature == signature && d.ObservationError == "" && deps.now().Sub(d.ObservedAt) < 15*time.Minute {
 			continue
 		}
 		opts.LogLines = deps.FailureDetails.LogLines
 		checks = failure.CollectDiagnosticStates(ctx, opts, deps.Forge, deps.Owner, deps.Repo, states, required)
-		d := queue.HeadDiagnosis{PR: pr.Number, HeadSHA: pr.HeadSHA, TargetBranch: pr.BaseBranch, Signature: signature, Failures: failure.Diagnose(checks, deps.Retry.Patterns)}
+		d := queue.HeadDiagnosis{PR: pr.Number, HeadSHA: pr.HeadSHA, TargetBranch: pr.BaseBranch, Signature: signature, Failures: failure.Diagnose(checks, deps.Retry.Patterns, pr.Number, pr.HeadSHA)}
 		changed, err := deps.Queue.SaveHeadDiagnosis(ctx, deps.RepoID, d)
 		if err != nil {
 			result.Errors = append(result.Errors, err)
