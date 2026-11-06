@@ -30,7 +30,13 @@ func TestRejectedHeadDoesNotReenterFromUnchangedIntent(t *testing.T) {
 					if source == "automerge" {
 						return automergeTimeline(), nil
 					}
+					if source == "label" {
+						return []gitea.TimelineComment{{Type: "label", Body: "1", User: &gitea.User{Login: "alice"}, Label: &gitea.Label{Name: "merge-queue"}}}, nil
+					}
 					return nil, nil
+				}
+				mock.GetCollaboratorPermissionFn = func(context.Context, string, string, string) (string, error) {
+					return "write", nil
 				}
 				mock.ListPRReviewsFn = approvedBy("alice")
 				mock.MergeBranchesFn = func(context.Context, string, string, string, string, string) (*gitea.MergeResult, error) {
