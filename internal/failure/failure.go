@@ -43,6 +43,7 @@ type Check struct {
 	TargetURL   string   `json:"target_url,omitempty"`
 	Job         string   `json:"job,omitempty"`
 	LogTail     []string `json:"log_tail,omitempty"`
+	LogError    string   `json:"log_error,omitempty"`
 }
 
 // Collect returns the failing checks on sha among required (all failing
@@ -57,6 +58,15 @@ func Collect(ctx context.Context, opts Options, f forge.Forge, owner, repo, sha 
 		slog.Warn("failure details: get check states failed", "sha", sha, "error", err)
 		return nil
 	}
+	return CollectStates(ctx, opts, f, owner, repo, states, required)
+}
+
+// CollectStates reuses an already observed head's checks, avoiding another API
+// read. Log collection has the same limits and redaction as Collect.
+func CollectStates(ctx context.Context, opts Options, f forge.Forge, owner, repo string, states map[string]forge.Check, required []string) []Check {
+	if !opts.Enabled {
+		return nil
+	}
 	red := newRedactor(opts.Secrets)
 	var out []Check
 	for name, c := range states {
@@ -67,14 +77,20 @@ func Collect(ctx context.Context, opts Options, f forge.Forge, owner, repo, sha 
 			continue
 		}
 		out = append(out, Check{
-			Context: name, State: string(c.State),
-			Description: red.apply(c.Description), TargetURL: c.TargetURL,
+			Context: bounded(red.apply(name), maxLineLen), State: string(c.State),
+			Description: bounded(red.apply(c.Description), maxLineLen), TargetURL: bounded(red.apply(c.TargetURL), 2048),
 		})
 	}
 	slices.SortFunc(out, func(a, b Check) int { return strings.Compare(a.Context, b.Context) })
+	out = out[:min(len(out), 30)]
 
 	lf, ok := f.(forge.JobLogFetcher)
 	if !ok || opts.LogLines <= 0 {
+		if opts.LogLines > 0 {
+			for i := range out {
+				out[i].LogError = "Job logs unavailable on this forge"
+			}
+		}
 		return out
 	}
 	for i := range out[:min(len(out), maxJobs)] {
@@ -83,15 +99,23 @@ func Collect(ctx context.Context, opts Options, f forge.Forge, owner, repo, sha 
 		}
 		job, log, err := lf.JobLog(ctx, owner, repo, out[i].TargetURL)
 		if err != nil {
+			out[i].LogError = "Job log unavailable"
 			if err != forge.ErrNoJob {
 				slog.Warn("failure details: fetch job log failed", "check", out[i].Context, "error", err)
 			}
 			continue
 		}
-		out[i].Job = job
-		out[i].LogTail = red.lines(Tail(log, opts.LogLines))
+		out[i].Job = bounded(red.apply(job), maxLineLen)
+		out[i].LogTail = Tail([]byte(red.apply(string(log))), min(opts.LogLines, 200))
 	}
 	return out
+}
+
+func bounded(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
 }
 
 func matchesAny(name string, patterns []string) bool {

@@ -137,6 +137,7 @@ type RepoDetailData struct {
 	RepoURL         string // link to the repo on the forge
 	Entries         []RepoDetailEntry
 	Batches         []RepoDetailBatch
+	HeadFailures    []diagnosisGroup
 	RefreshInterval int // seconds
 }
 
@@ -323,6 +324,12 @@ func serveRepoDetail(w http.ResponseWriter, r *http.Request, deps *Deps, ref for
 		Owner:           owner,
 		Name:            name,
 		RefreshInterval: deps.RefreshInterval,
+	}
+	heads, err := deps.Queue.HeadDiagnoses(ctx, repo.ID)
+	if err != nil {
+		slog.Warn("list PR head diagnoses", "error", err)
+	} else {
+		data.HeadFailures = groupDiagnoses(heads)
 	}
 	f := forgeFor(deps, ref)
 	if f != nil {

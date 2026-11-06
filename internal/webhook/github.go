@@ -99,10 +99,11 @@ func GithubHandler(secret []byte, repos RepoLookup, queueSvc *queue.Service, tri
 	})
 }
 
-// maybeTriggerPoll reconciles only on a green check, the sole transition that
-// can newly enqueue an auto-merge PR. Pending/failure events skip the poll.
+// Diagnostics need failures and recovery as well as admission's green signal.
+// TriggerPoll is coalesced by the registry's buffered notification channel.
 func maybeTriggerPoll(rm *RepoMonitor, state pg.CheckState) {
-	if state == pg.CheckStateSuccess && rm.TriggerPoll != nil {
+	diagnose := rm.Deps != nil && rm.Deps.FailureDetails.Enabled
+	if (state == pg.CheckStateSuccess || diagnose) && rm.TriggerPoll != nil {
 		rm.TriggerPoll()
 	}
 }

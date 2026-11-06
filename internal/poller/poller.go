@@ -96,6 +96,9 @@ type Deps struct {
 	hintedSHAs map[string]bool
 	// blockedStatus: head SHA -> last "blocked"/"draft" description posted.
 	blockedStatus map[string]string
+	// diagnosisOffset rotates bounded read-only observations across all PRs.
+	diagnosisOffset int
+	diagnosisOpen   bool
 }
 
 func (d *Deps) now() time.Time {
@@ -258,6 +261,7 @@ func PollOnce(ctx context.Context, deps *Deps) (*PollResult, error) {
 			}
 		}
 	}
+	observeHeadFailures(ctx, deps, result, openPRs)
 
 	enqueueAutoMergePRs(ctx, deps, result, openPRs)
 	enqueueLabeledPRs(ctx, deps, result, openPRs)
@@ -1007,6 +1011,9 @@ func tryFastForwardSuccess(ctx context.Context, deps *Deps, result *PollResult, 
 // hasActiveWork reports whether the repo has live queue state. It only reads
 // the local DB, so idle repos can be skipped without spending forge API quota.
 func hasActiveWork(ctx context.Context, deps *Deps) bool {
+	if deps.FailureDetails.Enabled && deps.diagnosisOpen {
+		return true
+	}
 	entries, err := deps.Queue.ListActiveEntries(ctx, deps.RepoID)
 	if err != nil {
 		// Fail open: keep reconciling rather than stall on a transient DB error.

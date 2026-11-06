@@ -20,6 +20,7 @@ var secretPatterns = []*regexp.Regexp{
 	// Well-known token formats (GitHub, GitLab, Slack, AWS, JWTs).
 	regexp.MustCompile(`()()\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})`),
 	// PEM private keys.
+	regexp.MustCompile(`(?s)()()(-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----)`),
 	regexp.MustCompile(`()()(-----BEGIN [A-Z ]*PRIVATE KEY-----)`),
 }
 
@@ -46,13 +47,6 @@ func (r *redactor) apply(s string) string {
 		s = re.ReplaceAllString(s, "${1}${2}"+redacted)
 	}
 	return s
-}
-
-func (r *redactor) lines(ls []string) []string {
-	for i := range ls {
-		ls[i] = r.apply(ls[i])
-	}
-	return ls
 }
 
 // pathMatch matches a required-check pattern the same way the monitor does.

@@ -3,7 +3,9 @@ package webhook
 import (
 	"testing"
 
+	"github.com/Mic92/gitea-mq/internal/failure"
 	"github.com/Mic92/gitea-mq/internal/forge"
+	"github.com/Mic92/gitea-mq/internal/monitor"
 	"github.com/Mic92/gitea-mq/internal/store/pg"
 )
 
@@ -23,6 +25,17 @@ func TestMaybeTriggerPoll_OnlyOnSuccess(t *testing.T) {
 		maybeTriggerPoll(rm, tc.state)
 		if polled != tc.want {
 			t.Errorf("state %q: polled=%d want %d", tc.state, polled, tc.want)
+		}
+	}
+}
+
+func TestDiagnosisTriggersPollForFailedAndPendingHeads(t *testing.T) {
+	for _, state := range []pg.CheckState{pg.CheckStateFailure, pg.CheckStateError, pg.CheckStatePending, pg.CheckStateSuccess} {
+		polled := 0
+		rm := &RepoMonitor{Deps: &monitor.Deps{FailureDetails: failure.Options{Enabled: true}}, TriggerPoll: func() { polled++ }}
+		maybeTriggerPoll(rm, state)
+		if polled != 1 {
+			t.Fatalf("state %s: polls=%d", state, polled)
 		}
 	}
 }

@@ -74,6 +74,11 @@ func New(url string, secret []byte, kinds []string) *Notifier {
 // Observe is a queue.EventObserver. It never blocks the queue: when the
 // buffer is full the event is dropped with a warning.
 func (n *Notifier) Observe(repo string, e queue.Event) {
+	// Pre-admission diagnoses are read-only by default, even when an older
+	// deployment subscribed to all queue transitions. Require explicit opt-in.
+	if e.Kind == queue.EventPRHeadFailed && !slices.Contains(n.Kinds, string(e.Kind)) {
+		return
+	}
 	if len(n.Kinds) > 0 && !slices.Contains(n.Kinds, string(e.Kind)) {
 		return
 	}

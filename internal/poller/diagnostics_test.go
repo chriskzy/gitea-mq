@@ -1,0 +1,205 @@
+package poller_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Mic92/gitea-mq/internal/failure"
+	"github.com/Mic92/gitea-mq/internal/forge"
+	"github.com/Mic92/gitea-mq/internal/monitor"
+	"github.com/Mic92/gitea-mq/internal/poller"
+	"github.com/Mic92/gitea-mq/internal/queue"
+	"github.com/Mic92/gitea-mq/internal/store/pg"
+	"github.com/Mic92/gitea-mq/internal/testutil"
+	"github.com/Mic92/gitea-mq/internal/web"
+	"github.com/Mic92/gitea-mq/internal/webhook"
+)
+
+type diagnosisForge struct {
+	*forge.MockForge
+	log      string
+	logCalls int
+}
+
+type diagnosisRepos struct{}
+
+func (diagnosisRepos) List() []forge.RepoRef {
+	return []forge.RepoRef{{Forge: forge.KindGitea, Owner: "org", Name: "app"}}
+}
+func (diagnosisRepos) Contains(key string) bool { return key == "gitea:org/app" }
+
+func (f *diagnosisForge) JobLog(context.Context, string, string, string) (string, []byte, error) {
+	f.logCalls++
+	return "unit tests", []byte(f.log), nil
+}
+
+func TestPreAdmissionDiagnosesAreGroupedDurableAndInvalidated(t *testing.T) {
+	svc, ctx, repoID := testutil.TestQueueService(t)
+	prs := []forge.PR{{Number: 1, HeadSHA: "head1", BaseBranch: "main"}, {Number: 2, HeadSHA: "head2", BaseBranch: "main"}}
+	state := pg.CheckStateFailure
+	unavailable := false
+	f := &diagnosisForge{MockForge: &forge.MockForge{}, log: "--- FAIL: TestThing (0.01s)\nAssertionError: expected 2 got 1\nTOKEN=supersecret"}
+	f.ListOpenPRsFn = func(context.Context, string, string) ([]forge.PR, error) { return prs, nil }
+	f.GetCheckStatesFn = func(_ context.Context, _, _, sha string) (map[string]forge.Check, error) {
+		if unavailable {
+			return nil, fmt.Errorf("API unavailable")
+		}
+		return map[string]forge.Check{"ci/unit": {State: state, Description: "failed", TargetURL: "https://ci/" + sha}}, nil
+	}
+	deps := &poller.Deps{Forge: f, Queue: svc, RepoID: repoID, Owner: "org", Repo: "app", ChecksFromConfig: true, FallbackChecks: []string{"ci/unit"}, FailureDetails: failure.Options{Enabled: true, LogLines: 20, Secrets: []string{"supersecret"}}}
+	poll := func() {
+		t.Helper()
+		r, err := poller.PollOnce(ctx, deps)
+		if err != nil || len(r.Errors) > 0 {
+			t.Fatalf("poll=%+v err=%v", r, err)
+		}
+		if len(r.Enqueued) > 0 {
+			t.Fatal("observation enqueued PR without intent")
+		}
+	}
+	api := web.HeadFailuresHandler(svc, func(key string) (int64, bool) { return repoID, key == "gitea:org/app" })
+	get := func() map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		api.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/head-failures?repo=gitea:org/app", nil))
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "supersecret") {
+			t.Fatal("secret persisted in API")
+		}
+		var v map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	// An unmatched PR-head status must wake diagnosis before queue admission.
+	triggered := 0
+	hook := webhook.Handler("hook-secret", webhook.MapRepoLookup{"gitea:org/app": &webhook.RepoMonitor{Deps: &monitor.Deps{RepoID: repoID, FailureDetails: deps.FailureDetails}, TriggerPoll: func() { triggered++; poll() }}}, svc)
+	postStatus := func(check string) {
+		t.Helper()
+		body := `{"sha":"head1","context":"` + check + `","state":"failure","repository":{"full_name":"org/app"}}`
+		r := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+		r.Header.Set("X-Gitea-Event", "status")
+		r.Header.Set("X-Gitea-Signature", webhook.ComputeSignature([]byte(body), "hook-secret"))
+		w := httptest.NewRecorder()
+		hook.ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	postStatus("ci/unit")
+	postStatus("gitea-mq/ci/unit")
+	if triggered != 1 {
+		t.Fatalf("status wake or own-context loop: %d", triggered)
+	}
+	groups := get()["groups"].([]any)
+	if len(groups) != 1 {
+		t.Fatalf("groups=%v", groups)
+	}
+	g := groups[0].(map[string]any)
+	if g["count"] != float64(2) || g["classification"] != "source" || g["test"] != "TestThing" {
+		t.Fatalf("group=%v", g)
+	}
+	dashboard := httptest.NewRecorder()
+	web.NewMux(&web.Deps{Queue: svc, Repos: diagnosisRepos{}}).ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/repo/gitea/org/app", nil))
+	for _, want := range []string{"PR head CI failures", "TestThing", "source", "head1"} {
+		if dashboard.Code != 200 || !strings.Contains(dashboard.Body.String(), want) {
+			t.Fatalf("dashboard missing %q: %d %s", want, dashboard.Code, dashboard.Body.String())
+		}
+	}
+	// Copying deps simulates a fresh poller; deduplication must live in the DB.
+	restarted := *deps
+	deps = &restarted
+	poll()
+	if f.logCalls != 2 {
+		t.Fatalf("restart repeated log reads: %d", f.logCalls)
+	}
+	events, err := svc.ListEvents(ctx, queue.EventFilter{RepoID: repoID, Kind: queue.EventPRHeadFailed, Limit: 100})
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events=%v err=%v", events, err)
+	}
+	// A same-URL rerun whose pending window was missed is re-read after expiry.
+	f.log = "--- FAIL: TestThing (0.01s)\nAssertionError: expected 3 got 1"
+	deps.Now = func() time.Time { return time.Now().Add(16 * time.Minute) }
+	poll()
+	if f.logCalls != 4 {
+		t.Fatalf("expired evidence not refreshed: %d", f.logCalls)
+	}
+	newGroup := get()["groups"].([]any)[0].(map[string]any)
+	if newGroup["fingerprint"] == g["fingerprint"] {
+		t.Fatal("changed assertion retained old fingerprint")
+	}
+	poll()
+	events, err = svc.ListEvents(ctx, queue.EventFilter{RepoID: repoID, Kind: queue.EventPRHeadFailed, Limit: 100})
+	if err != nil || len(events) != 4 {
+		t.Fatalf("unchanged refresh emitted event: %d %v", len(events), err)
+	}
+	deps.Now = nil
+	unavailable = true
+	r, err := poller.PollOnce(ctx, deps)
+	if err != nil || len(r.Errors) != 2 {
+		t.Fatalf("API failure not reported: %+v %v", r, err)
+	}
+	members := get()["groups"].([]any)[0].(map[string]any)["members"].([]any)
+	if members[0].(map[string]any)["stale"] != true {
+		t.Fatal("API failure retained fresh diagnosis")
+	}
+	unavailable = false
+	// New head invalidates old evidence even when the replacement is pending;
+	// a closed PR's evidence disappears in the same reconcile.
+	prs = prs[:1]
+	prs[0].HeadSHA = "replacement"
+	state = pg.CheckStatePending
+	poll()
+	if len(get()["groups"].([]any)) != 0 {
+		t.Fatal("pushed/closed diagnosis survived")
+	}
+	state = pg.CheckStateFailure
+	poll()
+	state = pg.CheckStateSuccess
+	poll()
+	if len(get()["groups"].([]any)) != 0 {
+		t.Fatal("recovered failure survived")
+	}
+	for _, method := range []string{"Comment", "SetMQStatus", "MirrorCheck", "MergePR", "CancelAutoMerge"} {
+		if len(f.CallsTo(method)) > 0 {
+			t.Fatalf("observer mutated forge: %s", method)
+		}
+	}
+}
+
+func TestDiagnosisObservationBudgetRotates(t *testing.T) {
+	svc, ctx, repoID := testutil.TestQueueService(t)
+	prs := make([]forge.PR, 33)
+	for i := range prs {
+		prs[i] = forge.PR{Number: int64(i + 1), HeadSHA: fmt.Sprint(i + 1), BaseBranch: "main"}
+		if i < 10 {
+			prs[i].BaseBranch = "excluded"
+		}
+	}
+	f := &forge.MockForge{ListOpenPRsFn: func(context.Context, string, string) ([]forge.PR, error) { return prs, nil }, GetCheckStatesFn: func(context.Context, string, string, string) (map[string]forge.Check, error) {
+		return map[string]forge.Check{"ci": {State: pg.CheckStateFailure}}, nil
+	}}
+	d := &poller.Deps{Forge: f, Queue: svc, RepoID: repoID, Owner: "org", Repo: "app", TargetBranches: []string{"main"}, ChecksFromConfig: true, FailureDetails: failure.Options{Enabled: true}}
+	for i := range 3 {
+		r, err := poller.PollOnce(ctx, d)
+		if err != nil || len(r.Errors) > 0 {
+			t.Fatalf("%+v %v", r, err)
+		}
+		if len(f.CallsTo("GetCheckStates")) != (i+1)*10 {
+			t.Fatal("head read budget exceeded")
+		}
+	}
+	heads, err := svc.HeadDiagnoses(ctx, repoID)
+	if err != nil || len(heads) != 23 {
+		t.Fatalf("rotation starved PRs: %d %v", len(heads), err)
+	}
+}

@@ -46,5 +46,24 @@
     {{else}}
     <p class="empty">No PRs in queue.</p>
     {{end}}
+
+    {{if .HeadFailures}}
+    <div class="section">
+        <h2>PR head CI failures</h2>
+        <p>Last observed failures, grouped by diagnostic evidence. Classification is advisory; source means assertion evidence, not a proven code defect. No automatic retry or admission changes.</p>
+        {{range .HeadFailures}}
+        <details>
+            <summary>{{.Count}} PR(s) · {{.Classification}} · {{.Context}}{{if .Test}} · {{.Test}}{{end}}</summary>
+            <p>Fingerprint: <code>{{.Fingerprint}}</code>{{if .Job}} · Job: {{.Job}}{{end}}</p>
+            {{if .Evidence}}<pre>{{.Evidence}}</pre>{{end}}
+            {{range .Members}}<p><a href="{{$.BasePath}}/repo/{{$.Forge}}/{{$.Owner}}/{{$.Name}}/pr/{{.PR}}">PR #{{.PR}}</a> · <code>{{.HeadSHA}}</code> · observed {{relativeTime .ObservedAt}}{{if .Stale}} · stale observation{{end}}{{if .ObservationError}} · {{.ObservationError}}{{end}}</p>{{end}}
+            {{if .LogError}}<p>{{.LogError}}</p>{{end}}
+            {{if .TargetURL}}<p><a href="{{.TargetURL}}">Representative failing check ↗</a></p>{{end}}
+            {{if .LogTail}}<pre>{{range .LogTail}}{{.}}
+{{end}}</pre>{{end}}
+        </details>
+        {{end}}
+    </div>
+    {{end}}
 </body>
 </html>

@@ -237,6 +237,7 @@ func run() error {
 	mux.Handle("GET /api/events/summary", web.EventSummaryHandler(queueSvc, repoID))
 	mux.Handle("GET /api/v1/repos/{forge}/{owner}/{name}/events", web.EventsHandler(queueSvc, repoID))
 	mux.Handle("GET /api/v1/repos/{forge}/{owner}/{name}/queue", web.QueueHandler(queueSvc, repoID))
+	mux.Handle("GET /api/v1/repos/{forge}/{owner}/{name}/head-failures", web.HeadFailuresHandler(queueSvc, repoID))
 	if metricsReg != nil {
 		mux.Handle("GET /metrics", metricsReg)
 	}
