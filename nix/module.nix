@@ -166,6 +166,12 @@ in
       description = "Fallback required check contexts (if branch protection doesn't specify them).";
     };
 
+    targetBranches = lib.mkOption {
+      type = lib.types.listOf (lib.types.strMatching "[^,[:space:]]+");
+      default = [ ];
+      description = "Exact PR base and queue target branch names eligible for new queue admission. Empty allows all.";
+    };
+
     prRequiredChecks = lib.mkOption {
       type = lib.types.nullOr (lib.types.listOf lib.types.str);
       default = null;
@@ -201,6 +207,12 @@ in
       type = lib.types.int;
       default = 0;
       description = "Cap on CI builds spent bisecting one failing batch. 0 means unlimited.";
+    };
+
+    nativeStackMerge = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Allow batched GitHub stacks to use GitHub's asynchronous merge API when queue-specific approval and merge-check overrides are absent.";
     };
 
     requiredChecksSource = lib.mkOption {
@@ -426,6 +438,7 @@ in
         GITEA_MQ_PRIORITY_LABEL = cfg.priorityLabel;
         GITEA_MQ_SKIP_QUEUE_IF_UP_TO_DATE = lib.boolToString cfg.skipQueueIfUpToDate;
         GITEA_MQ_BATCH_MAX = toString cfg.batchMax;
+        GITEA_MQ_NATIVE_STACK_MERGE = lib.boolToString cfg.nativeStackMerge;
         GITEA_MQ_BISECT_MAX_STEPS = toString cfg.bisectMaxSteps;
         GITEA_MQ_REQUIRED_CHECKS_SOURCE = cfg.requiredChecksSource;
         GITEA_MQ_AUTO_SETUP = lib.boolToString cfg.autoSetup;
@@ -457,6 +470,9 @@ in
       }
       // lib.optionalAttrs (cfg.requiredChecks != [ ]) {
         GITEA_MQ_REQUIRED_CHECKS = lib.concatStringsSep "," cfg.requiredChecks;
+      }
+      // lib.optionalAttrs (cfg.targetBranches != [ ]) {
+        GITEA_MQ_TARGET_BRANCHES = lib.concatStringsSep "," cfg.targetBranches;
       }
       // lib.optionalAttrs (cfg.prRequiredChecks != null) {
         GITEA_MQ_PR_REQUIRED_CHECKS = lib.concatStringsSep "," cfg.prRequiredChecks;

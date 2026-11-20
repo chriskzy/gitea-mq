@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -54,7 +55,7 @@ func TestReadiness(t *testing.T) {
 		t.Fatalf("failing db: code=%d want 503", code)
 	}
 	checks := body["checks"].(map[string]any)
-	if checks["database"] != "connection refused" || checks["gitea"] != "ok" {
+	if checks["database"] != "unavailable" || checks["gitea"] != "ok" {
 		t.Fatalf("checks = %v", checks)
 	}
 }
@@ -69,5 +70,61 @@ func TestReadiness_Timeout(t *testing.T) {
 	}
 	if code, _ := get(t, r); code != http.StatusServiceUnavailable {
 		t.Fatalf("hung probe: code=%d want 503", code)
+	}
+}
+
+func TestReadiness_ProbeOutcomes(t *testing.T) {
+	names := []string{"database", "gitea", "github"}
+	for mask := range 1 << len(names) {
+		t.Run(fmt.Sprintf("%03b", mask), func(t *testing.T) {
+			r := &health.Readiness{Timeout: time.Second}
+			wantChecks := make(map[string]string)
+			for i, name := range names {
+				failed := mask&(1<<i) != 0
+				wantChecks[name] = "ok"
+				if failed {
+					wantChecks[name] = "unavailable"
+				}
+				r.Checks = append(r.Checks, health.Check{
+					Name: name,
+					Probe: func(context.Context) error {
+						if failed {
+							return errors.New("private dependency error")
+						}
+						return nil
+					},
+				})
+			}
+			wantCode, wantStatus := http.StatusOK, "ok"
+			if mask != 0 {
+				wantCode, wantStatus = http.StatusServiceUnavailable, "unavailable"
+			}
+			code, body := get(t, r)
+			if code != wantCode || body["status"] != wantStatus {
+				t.Fatalf("response = %d %v, want %d %s", code, body, wantCode, wantStatus)
+			}
+			checks := body["checks"].(map[string]any)
+			for name, want := range wantChecks {
+				if got := checks[name]; got != want {
+					t.Errorf("%s = %v, want %s", name, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestReadiness_RefreshIgnoresCallerCancellation(t *testing.T) {
+	r := &health.Readiness{
+		Checks: []health.Check{{Name: "database", Probe: func(ctx context.Context) error {
+			return ctx.Err()
+		}}},
+		Timeout: time.Second,
+		TTL:     time.Minute,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "/readyz", nil))
+	if code, _ := get(t, r); code != http.StatusOK {
+		t.Fatalf("ready after canceled caller: code=%d want 200", code)
 	}
 }

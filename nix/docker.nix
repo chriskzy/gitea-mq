@@ -3,7 +3,6 @@
   pkgs,
   gitea-mq,
   imageName ? "${gitea-mq.pname}:latest",
-  # Source commit and commit time (YYYYMMDDHHMMSS) for the OCI labels.
   revision ? null,
   lastModifiedDate ? null,
 }:
@@ -74,20 +73,17 @@ let
         ExposedPorts = {
           "8080" = { };
         };
-        # OCI labels so any image, local or CI-built, names its source commit.
-        # CI additionally applies docker/metadata-action's labels on push.
         Labels = {
           "org.opencontainers.image.title" = gitea-mq.pname;
           "org.opencontainers.image.description" = "Merge queue for Gitea and GitHub";
           "org.opencontainers.image.version" = gitea-mq.version;
           "org.opencontainers.image.licenses" = "MIT";
-          "org.opencontainers.image.source" = "https://github.com/Mic92/gitea-mq";
         }
         // lib.optionalAttrs (revision != null) {
           "org.opencontainers.image.revision" = revision;
         }
         // lib.optionalAttrs (lastModifiedDate != null) {
-          # Commit time, not build time, so the image stays reproducible.
+          # Use the flake's source timestamp so rebuilds are reproducible.
           "org.opencontainers.image.created" = created;
         };
       };

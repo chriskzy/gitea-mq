@@ -98,18 +98,19 @@ func TestLoad_BatchMax(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.BatchMax != 1 || cfg.BisectMaxSteps != 0 {
-		t.Fatalf("defaults: BatchMax=%d BisectMaxSteps=%d", cfg.BatchMax, cfg.BisectMaxSteps)
+	if cfg.BatchMax != 1 || cfg.BisectMaxSteps != 0 || cfg.NativeStackMerge {
+		t.Fatalf("defaults: BatchMax=%d BisectMaxSteps=%d NativeStackMerge=%t", cfg.BatchMax, cfg.BisectMaxSteps, cfg.NativeStackMerge)
 	}
 
 	t.Setenv("GITEA_MQ_BATCH_MAX", "10")
 	t.Setenv("GITEA_MQ_BISECT_MAX_STEPS", "5")
+	t.Setenv("GITEA_MQ_NATIVE_STACK_MERGE", "true")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.BatchMax != 10 || cfg.BisectMaxSteps != 5 {
-		t.Fatalf("override: BatchMax=%d BisectMaxSteps=%d", cfg.BatchMax, cfg.BisectMaxSteps)
+	if cfg.BatchMax != 10 || cfg.BisectMaxSteps != 5 || !cfg.NativeStackMerge {
+		t.Fatalf("override: BatchMax=%d BisectMaxSteps=%d NativeStackMerge=%t", cfg.BatchMax, cfg.BisectMaxSteps, cfg.NativeStackMerge)
 	}
 
 	t.Setenv("GITEA_MQ_BATCH_MAX", "-1")
@@ -400,6 +401,7 @@ func TestLoad_ApprovalOptions(t *testing.T) {
 
 func TestLoad_TargetBranches(t *testing.T) {
 	setEnv(t, giteaEnv)
+	t.Setenv("GITEA_MQ_TARGET_BRANCHES", "")
 	cfg, err := Load()
 	if err != nil || len(cfg.TargetBranches) != 0 {
 		t.Fatalf("default: %+v %v", cfg, err)
@@ -408,6 +410,10 @@ func TestLoad_TargetBranches(t *testing.T) {
 	cfg, err = Load()
 	if err != nil || !slices.Equal(cfg.TargetBranches, []string{"main", "release/stable"}) {
 		t.Fatalf("targets: %+v %v", cfg, err)
+	}
+	t.Setenv("GITEA_MQ_TARGET_BRANCHES", " , ")
+	if _, err := Load(); err == nil {
+		t.Fatal("a nonempty value without branch names must fail")
 	}
 }
 

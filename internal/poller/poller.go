@@ -5,6 +5,7 @@ package poller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -174,10 +175,25 @@ func removalEventKind(reason string) queue.EventKind {
 	switch reason {
 	case "merged":
 		return queue.EventMerged
-	case "closed", "cancelled":
+	case "closed", "cancelled", "deleted":
 		return queue.EventRemoved
 	default:
 		return queue.EventEjected
+	}
+}
+
+// removeEntry drops the entry from the queue and lets the batch engine rebuild
+// or cancel a batch it was a member of.
+func removeEntry(ctx context.Context, deps *Deps, result *PollResult, entry *pg.QueueEntry, label string, opts removeOpts) {
+	opts.reason = label
+	if err := removePR(ctx, deps, result, entry, opts); err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("dequeue %s PR #%d: %w", label, entry.PrNumber, err))
+		return
+	}
+	if entry.ActiveBatchID.Valid && deps.Batch != nil {
+		if err := deps.Batch.OnMemberRemoved(ctx, entry.TargetBranch, entry.ActiveBatchID.Int64, entry.ID); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("batch member removed PR #%d: %w", entry.PrNumber, err))
+		}
 	}
 }
 
@@ -197,7 +213,11 @@ func prCheckResult(ctx context.Context, deps *Deps, pr *forge.PR, targetBranch s
 	if err != nil {
 		return monitor.CheckWaiting, fmt.Errorf("resolve required checks for PR #%d: %w", pr.Number, err)
 	}
+	return headCheckResult(ctx, deps, pr, requiredChecks)
+}
 
+// headCheckResult is prCheckResult with the required checks already resolved.
+func headCheckResult(ctx context.Context, deps *Deps, pr *forge.PR, requiredChecks []string) (monitor.CheckResult, error) {
 	checks, err := deps.Forge.GetCheckStates(ctx, deps.Owner, deps.Repo, pr.HeadSHA)
 	if err != nil {
 		return monitor.CheckWaiting, fmt.Errorf("get check states for PR #%d: %w", pr.Number, err)
@@ -401,7 +421,7 @@ func enqueueAutoMergePRs(ctx context.Context, deps *Deps, result *PollResult, op
 			continue
 		}
 
-		enqueuePR(ctx, deps, result, pr, pr.BaseBranch, "automerge detection")
+		enqueuePR(ctx, deps, result, pr, pr.BaseBranch, "automerge detection", nil)
 	}
 }
 
@@ -409,7 +429,7 @@ func enqueueAutoMergePRs(ctx context.Context, deps *Deps, result *PollResult, op
 const draftStatus = "Draft PR: mark it ready for review to enter the queue"
 
 // enqueuePR adds a PR to the queue for targetBranch once its own CI is green.
-func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR, targetBranch, source string) {
+func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR, targetBranch, source string, stack *forge.Stack) {
 	if len(deps.TargetBranches) > 0 && (!slices.Contains(deps.TargetBranches, pr.BaseBranch) || !slices.Contains(deps.TargetBranches, targetBranch)) {
 		markWaiting(ctx, deps, pr.Number, pr.HeadSHA, "Target branch is not admitted by this queue")
 		return
@@ -418,6 +438,13 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 	// kept and the PR is queued once it is marked ready.
 	if pr.Draft {
 		markWaiting(ctx, deps, pr.Number, pr.HeadSHA, draftStatus)
+		return
+	}
+	_, supportsStacks := deps.Forge.(forge.StackResolver)
+	if source == sourceLabel && supportsStacks && deps.Batch.Enabled() && landedOnTarget(ctx, deps, pr, targetBranch) {
+		return
+	}
+	if !stackMembersGreen(ctx, deps, result, pr, stack, targetBranch) {
 		return
 	}
 
@@ -486,6 +513,8 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 // reviews were already checked.
 const sourceApproval = "approval"
 
+const sourceLabel = "merge label"
+
 // approvalGate reports whether pr has the required approvals, posting a
 // waiting status when it does not. Always true when approvals are not
 // required.
@@ -533,7 +562,7 @@ func enqueueApprovedPRs(ctx context.Context, deps *Deps, result *PollResult, ope
 		if !ok {
 			continue
 		}
-		enqueuePR(ctx, deps, result, pr, pr.BaseBranch, sourceApproval)
+		enqueuePR(ctx, deps, result, pr, pr.BaseBranch, sourceApproval, nil)
 	}
 }
 
@@ -568,12 +597,21 @@ func enqueueLabeledPRs(ctx context.Context, deps *Deps, result *PollResult, open
 			continue
 		}
 
-		target, err := labeledTargetBranch(ctx, deps, pr)
+		// A stack top stays open and labeled while the forge merges it.
+		if deps.Batch.RecentlyLanded(pr.Number, pr.HeadSHA) {
+			continue
+		}
+
+		stack, err := labeledStack(ctx, deps, pr)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("resolve stack for PR #%d: %w", pr.Number, err))
 			continue
 		}
-		enqueuePR(ctx, deps, result, pr, target, "merge label")
+		target := pr.BaseBranch
+		if stack != nil {
+			target = stack.BaseBranch
+		}
+		enqueuePR(ctx, deps, result, pr, target, sourceLabel, stack)
 	}
 }
 
@@ -592,19 +630,87 @@ func rejectMergeLabel(ctx context.Context, deps *Deps, result *PollResult, numbe
 		"comment on unauthorized merge label failed", "pr", number)
 }
 
+// labeledStack is the PR's stack, or nil when it is not part of one.
+func labeledStack(ctx context.Context, deps *Deps, pr *forge.PR) (*forge.Stack, error) {
+	stack, err := forge.ResolveStack(ctx, deps.Forge, deps.Owner, deps.Repo, pr.Number)
+	if err != nil || stack == nil {
+		return nil, err
+	}
+	if _, ok := stack.MembersUpTo(pr.Number); !ok {
+		return nil, nil
+	}
+	return stack, nil
+}
+
 // labeledTargetBranch is the stack base branch for stacked PRs, else the PR's
 // own base branch.
 func labeledTargetBranch(ctx context.Context, deps *Deps, pr *forge.PR) (string, error) {
-	stack, err := forge.ResolveStack(ctx, deps.Forge, deps.Owner, deps.Repo, pr.Number)
+	stack, err := labeledStack(ctx, deps, pr)
 	if err != nil {
 		return "", err
 	}
 	if stack != nil {
-		if _, ok := stack.MembersUpTo(pr.Number); ok {
-			return stack.BaseBranch, nil
-		}
+		return stack.BaseBranch, nil
 	}
 	return pr.BaseBranch, nil
+}
+
+// landedOnTarget reports whether the PR's head is already in the target, as
+// right after a landing, before the forge marks the PR merged. Compare errors
+// count as not landed so a flaky API never blocks the queue.
+func landedOnTarget(ctx context.Context, deps *Deps, pr *forge.PR, target string) bool {
+	landed, err := deps.Forge.IsUpToDate(ctx, deps.Owner, deps.Repo, pr.HeadSHA, target)
+	if err != nil {
+		slog.Warn("landed check failed", "pr", pr.Number, "error", err)
+		return false
+	}
+	if landed {
+		slog.Info("labeled PR already contained in target; not enqueuing", "pr", pr.Number, "target", target)
+	}
+	return landed
+}
+
+// stackMembersGreen holds back a labeled stack top until every lower member's
+// own CI is green: the forge's stack merge re-checks each member, and a stuck
+// one would leave the top in success until the success timeout
+// (Mic92/nixbot#179). The merge intent stays.
+func stackMembersGreen(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR, stack *forge.Stack, target string) bool {
+	if stack == nil || (deps.PRChecks != nil && len(*deps.PRChecks) == 0) {
+		return true
+	}
+	// Members share the stack base's required checks; resolving them per
+	// member would cost a large stack two calls per member on every poll.
+	requiredChecks, err := monitor.ResolveCheckList(ctx, deps.Forge, deps.Owner, deps.Repo, target, deps.PRChecks, deps.FallbackChecks, deps.ChecksFromConfig)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("resolve required checks for stack of PR #%d: %w", pr.Number, err))
+		return false
+	}
+	members, _ := stack.MembersUpTo(pr.Number)
+	for _, m := range members {
+		if m.Merged || m.Number == pr.Number {
+			continue
+		}
+		if m.HeadSHA == "" {
+			result.Errors = append(result.Errors, fmt.Errorf("missing head of stack member #%d of PR #%d", m.Number, pr.Number))
+			return false
+		}
+		member := forge.PR{Number: m.Number, HeadSHA: m.HeadSHA}
+		res, err := headCheckResult(ctx, deps, &member, requiredChecks)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("check CI status for stack member #%d of PR #%d: %w", m.Number, pr.Number, err))
+			return false
+		}
+		switch res {
+		case monitor.CheckSuccess:
+			continue
+		case monitor.CheckFailure:
+			markWaiting(ctx, deps, pr.Number, pr.HeadSHA, fmt.Sprintf("Stack member #%d CI failed", m.Number))
+		default:
+			markWaiting(ctx, deps, pr.Number, pr.HeadSHA, fmt.Sprintf("Waiting for stack member #%d CI", m.Number))
+		}
+		return false
+	}
+	return true
 }
 
 // hintStackedPRs surfaces the label workflow on stacked PRs, whose required
@@ -691,7 +797,7 @@ func finalizeLabeledMerge(ctx context.Context, deps *Deps, result *PollResult, e
 }
 
 // reconcileEntries removes queue entries whose PR was merged, closed,
-// retargeted, pushed to, or had auto-merge cancelled.
+// deleted, retargeted, pushed to, or had auto-merge cancelled.
 func reconcileEntries(ctx context.Context, deps *Deps, result *PollResult, openPRMap map[int64]*forge.PR) {
 	activeEntries, err := deps.Queue.ListActiveEntries(ctx, deps.RepoID)
 	if err != nil {
@@ -704,7 +810,14 @@ func reconcileEntries(ctx context.Context, deps *Deps, result *PollResult, openP
 		if !isOpen {
 			// PR no longer in the open list: fetch directly to learn merged/closed.
 			fullPR, err := deps.Forge.GetPR(ctx, deps.Owner, deps.Repo, entry.PrNumber)
-			if err != nil {
+			switch {
+			case errors.Is(err, forge.ErrNotFound):
+				// A deleted PR cannot be read at all, so it is gone for good:
+				// drop it like a closed one instead of retrying the 404 on
+				// every poll. There is no PR left to comment on.
+				removeEntry(ctx, deps, result, &entry, "deleted", removeOpts{logMsg: "removed deleted PR from queue"})
+				continue
+			case err != nil:
 				result.Errors = append(result.Errors, fmt.Errorf("get PR #%d: %w", entry.PrNumber, err))
 				continue
 			}
@@ -797,19 +910,11 @@ func reconcileEntries(ctx context.Context, deps *Deps, result *PollResult, openP
 			if !c.when {
 				continue
 			}
-			c.opts.reason = c.label
-			if err := removePR(ctx, deps, result, &entry, c.opts); err != nil {
-				result.Errors = append(result.Errors, fmt.Errorf("dequeue %s PR #%d: %w", c.label, entry.PrNumber, err))
-			}
+			removeEntry(ctx, deps, result, &entry, c.label, c.opts)
 			matched = true
 			break
 		}
 		if matched {
-			if entry.ActiveBatchID.Valid && deps.Batch != nil {
-				if err := deps.Batch.OnMemberRemoved(ctx, entry.TargetBranch, entry.ActiveBatchID.Int64, entry.ID); err != nil {
-					result.Errors = append(result.Errors, fmt.Errorf("batch member removed PR #%d: %w", entry.PrNumber, err))
-				}
-			}
 			continue
 		}
 		if isOpen && holdIfBlocked(ctx, deps, result, &entry) {

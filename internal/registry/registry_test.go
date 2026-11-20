@@ -282,10 +282,27 @@ func TestAdd_SkipSetup(t *testing.T) {
 	}
 }
 
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // A protection rule requiring a pull_request-only context stalls every
 // merge-branch run until timeout; the registry must say so on startup.
 func TestAdd_WarnsAboutPullRequestOnlyChecks(t *testing.T) {
-	var buf bytes.Buffer
+	var buf logBuffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })

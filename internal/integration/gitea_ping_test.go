@@ -14,7 +14,7 @@ func TestGiteaPing(t *testing.T) {
 		t.Skip("gitea server not available")
 	}
 	api := testutil.NewGiteaAPI(giteaServer.URL)
-	api.CreateToken(t)
+	api.CreateToken(t, "write:repository", "write:issue")
 
 	if err := gitea.NewHTTPClient(giteaServer.URL, api.Token).Ping(t.Context()); err != nil {
 		t.Fatalf("valid token: %v", err)

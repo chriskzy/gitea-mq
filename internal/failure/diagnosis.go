@@ -18,11 +18,13 @@ type Diagnosis struct {
 	EvidenceLimited bool   `json:"evidence_limited"`
 }
 
-var failedTest = regexp.MustCompile(`(?:--- FAIL: ([^\s(]+)|(?:^|\s)FAILED ([A-Za-z0-9_./\-]+::[^\s]+)|Test Case '([^']+)' failed)`)
-var assertion = regexp.MustCompile(`(?i)(assertion(?:error| failed| failure)|assert(?:equal|true|false|that)\b|expected .+ (?:got|but|actual)|error: .+:[0-9]+: .+ failed)`)
-var timestamp = regexp.MustCompile(`\b\d{4}-\d\d-\d\d[T ][0-9:.]+Z?\s*`)
-var duration = regexp.MustCompile(`(?:\([0-9.]+s\)|\bin [0-9.]+s\b)`)
-var workspace = regexp.MustCompile(`/(?:home/runner/work|workspace|github/workspace|Users/[^/]+/dev)/`)
+var (
+	failedTest = regexp.MustCompile(`(?:--- FAIL: ([^\s(]+)|(?:^|\s)FAILED ([A-Za-z0-9_./\-]+::[^\s]+)|Test Case '([^']+)' failed)`)
+	assertion  = regexp.MustCompile(`(?i)(assertion(?:error| failed| failure)|assert(?:equal|true|false|that)\b|expected .+ (?:got|but|actual)|error: .+:[0-9]+: .+ failed)`)
+	timestamp  = regexp.MustCompile(`\b\d{4}-\d\d-\d\d[T ][0-9:.]+Z?\s*`)
+	duration   = regexp.MustCompile(`(?:\([0-9.]+s\)|\bin [0-9.]+s\b)`)
+	workspace  = regexp.MustCompile(`/(?:home/runner/work|workspace|github/workspace|Users/[^/]+/dev)/`)
+)
 
 // Diagnose groups matching failure evidence across PRs. Unknown is intentional:
 // a failed check or a generic "error" does not establish a source defect.

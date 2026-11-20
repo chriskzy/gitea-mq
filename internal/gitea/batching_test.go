@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Mic92/gitea-mq/internal/forge"
 )
@@ -36,6 +37,31 @@ func TestBatchSemanticBoundaryLabelIsolates(t *testing.T) {
 	}
 }
 
+func TestBatchSingletonSkipsTimingButChecksEligibility(t *testing.T) {
+	mock := &MockClient{
+		GetPRFn: func(_ context.Context, _, _ string, n int64) (*PR, error) {
+			return &PR{Index: n, State: "open", Head: &PRRef{Sha: "h1"}, Base: &PRRef{Ref: "main"}}, nil
+		},
+		ListRunsFn: func(context.Context, string, string) ([]ActionRun, error) {
+			return []ActionRun{{ID: 1, HeadSHA: "h1", Path: "ci.yml@refs/pull/1/head", Event: "pull_request"}}, nil
+		},
+	}
+	f := &giteaForge{client: mock}
+	const suite = "ci / validate (pull_request)"
+	candidate := forge.BatchCandidate{Number: 1, HeadSHA: "h1"}
+	routing := forge.BatchInput{HeadSHA: candidate.HeadSHA, RoutingBaseSHA: "base", Files: []string{"biz/file"}, Suites: []string{suite}, WorkflowPaths: map[string]string{suite: "ci.yml"}}
+	inputs := f.enrichBatchInputs(t.Context(), "o", "r", "main", []forge.BatchCandidate{candidate}, []forge.BatchInput{routing})
+	if input := inputs[0]; input.Blocked || input.HeadSHA != candidate.HeadSHA || input.RoutingBaseSHA != "base" || !slices.Equal(input.Suites, routing.Suites) || input.Seconds != nil || input.TimingSources != nil {
+		t.Fatalf("unexpected singleton decision inputs: %+v", input)
+	}
+	if runs, jobs := len(mock.CallsTo("ListRuns")), len(mock.CallsTo("ListRunJobs")); runs != 0 || jobs != 0 {
+		t.Fatalf("singleton made %d run-list and %d job-list requests", runs, jobs)
+	}
+	if len(mock.CallsTo("GetPR")) == 0 || len(mock.CallsTo("ListIssueDependencies")) != 1 {
+		t.Fatal("singleton skipped the head or dependency check")
+	}
+}
+
 func TestBatchDurationFromObservedGiteaPayload(t *testing.T) {
 	var fixture struct {
 		Run  ActionRun   `json:"run"`
@@ -48,12 +74,23 @@ func TestBatchDurationFromObservedGiteaPayload(t *testing.T) {
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	f := &giteaForge{client: &MockClient{ListRunJobsFn: func(_ context.Context, _, _ string, _ int64) ([]ActionJob, error) { return fixture.Jobs, nil }}}
+	mock := &MockClient{ListRunJobsFn: func(_ context.Context, _, _ string, _ int64) ([]ActionJob, error) { return fixture.Jobs, nil }}
+	f := &giteaForge{client: mock}
 	suite := "ckz-infra-ci / validate (pull_request)"
-	workflows := map[string]string{suite: "ckz-infra-ci.yml"}
-	seconds, sources := f.batchDurations(t.Context(), "ckz_data_labs", "Terminus", fixture.Run.HeadSHA, []string{suite}, workflows, []ActionRun{fixture.Run})
+	secondSuite := "ckz-infra-ci / test (pull_request)"
+	secondJob := fixture.Jobs[1]
+	secondJob.ID++
+	secondJob.Name = "test"
+	secondJob.CompletedAt = secondJob.StartedAt.Add(2 * time.Minute)
+	secondJob.HTMLURL += "-test"
+	fixture.Jobs = append(fixture.Jobs, secondJob)
+	workflows := map[string]string{suite: "ckz-infra-ci.yml", secondSuite: "ckz-infra-ci.yml"}
+	seconds, sources := f.batchDurations(t.Context(), "ckz_data_labs", "Terminus", fixture.Run.HeadSHA, []string{suite, secondSuite}, workflows, []ActionRun{fixture.Run})
 	if seconds[suite] != 73 || sources[suite] != fixture.Jobs[1].HTMLURL {
 		t.Fatalf("unexpected observed timing: %v %v", seconds, sources)
+	}
+	if seconds[secondSuite] != 120 || sources[secondSuite] != secondJob.HTMLURL || len(mock.CallsTo("ListRunJobs")) != 1 {
+		t.Fatalf("expected both jobs from one request: timings=%v sources=%v requests=%v", seconds, sources, mock.CallsTo("ListRunJobs"))
 	}
 	fixture.Jobs[1].Conclusion = "skipped"
 	if seconds, _ := f.batchDurations(t.Context(), "o", "r", fixture.Run.HeadSHA, []string{suite}, workflows, []ActionRun{fixture.Run}); seconds != nil {

@@ -36,6 +36,7 @@ type Config struct {
 	SkipQueueIfUpToDate bool
 	BatchMax            int
 	BatchPolicyPath     string
+	NativeStackMerge    bool
 	BisectMaxSteps      int
 	RefreshInterval     time.Duration
 	DiscoveryInterval   time.Duration
@@ -205,7 +206,11 @@ func Load() (*Config, error) {
 	}
 
 	cfg.RequiredChecks = parseList(os.Getenv("GITEA_MQ_REQUIRED_CHECKS"))
-	cfg.TargetBranches = parseList(os.Getenv("GITEA_MQ_TARGET_BRANCHES"))
+	targetBranches := os.Getenv("GITEA_MQ_TARGET_BRANCHES")
+	cfg.TargetBranches = parseList(targetBranches)
+	if targetBranches != "" && len(cfg.TargetBranches) == 0 {
+		return nil, fmt.Errorf("GITEA_MQ_TARGET_BRANCHES: no branch names specified")
+	}
 	cfg.PRRequiredChecks = optionalList("GITEA_MQ_PR_REQUIRED_CHECKS")
 	cfg.MergeRequiredChecks = optionalList("GITEA_MQ_MERGE_REQUIRED_CHECKS")
 
@@ -249,6 +254,10 @@ func Load() (*Config, error) {
 	}
 	if cfg.BatchMax > 10 {
 		return nil, fmt.Errorf("GITEA_MQ_BATCH_MAX must be between 1 and 10")
+	}
+	cfg.NativeStackMerge, err = parseBool("GITEA_MQ_NATIVE_STACK_MERGE", false)
+	if err != nil {
+		return nil, err
 	}
 	cfg.BisectMaxSteps, err = parseInt("GITEA_MQ_BISECT_MAX_STEPS", 0, 0)
 	if err != nil {

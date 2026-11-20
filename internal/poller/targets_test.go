@@ -63,20 +63,28 @@ func TestTargetBranchAdmissionBeforeCI(t *testing.T) {
 	}
 }
 
-func TestTargetBranchAdmissionChecksRawAndResolvedTargets(t *testing.T) {
-	for _, targets := range []struct{ base, resolved string }{
-		{base: "main", resolved: "release/stable"},
-		{base: "feature-parent", resolved: "main"},
+func TestIneligibleStacksSkipMemberChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, resolved string
+		draft                bool
+	}{
+		{name: "ineligible stack base", base: "main", resolved: "release/stable"},
+		{name: "ineligible PR base", base: "feature-parent", resolved: "main"},
+		{name: "draft stack", base: "main", resolved: "main", draft: true},
 	} {
-		t.Run(targets.base+"_to_"+targets.resolved, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			deps, mock, svc, ctx, repoID := setupLabelTest(t)
 			deps.TargetBranches = []string{"main"}
 			mock.ListOpenPRsFn = func(context.Context, string, string) ([]forge.PR, error) {
-				return []forge.PR{{Number: 42, State: "open", HeadSHA: "sha42", BaseBranch: targets.base,
-					Labels: []string{"merge-queue"}}}, nil
+				return []forge.PR{{
+					Number: 42, State: "open", HeadSHA: "sha42", BaseBranch: tc.base, Draft: tc.draft,
+					Labels: []string{"merge-queue"},
+				}}, nil
 			}
 			mock.ResolveStackFn = func(context.Context, string, string, int64) (*forge.Stack, error) {
-				return &forge.Stack{BaseBranch: targets.resolved, PRs: []forge.StackPR{{Number: 42, HeadSHA: "sha42"}}}, nil
+				return &forge.Stack{BaseBranch: tc.resolved, PRs: []forge.StackPR{
+					{Number: 41, HeadSHA: "sha41"}, {Number: 42, HeadSHA: "sha42"},
+				}}, nil
 			}
 			for range 3 {
 				got, err := poller.PollOnce(ctx, deps)
@@ -87,7 +95,7 @@ func TestTargetBranchAdmissionChecksRawAndResolvedTargets(t *testing.T) {
 			if entry, err := svc.GetEntry(ctx, repoID, 42); err != nil || entry != nil {
 				t.Fatalf("unexpected queue entry: %+v %v", entry, err)
 			}
-			for _, operation := range []string{"GetCheckStates", "CreateMergeBranch", "MergePR"} {
+			for _, operation := range []string{"GetRequiredChecks", "GetCheckStates", "CreateMergeBranch", "MergePR"} {
 				if len(mock.CallsTo(operation)) != 0 {
 					t.Fatalf("ineligible target consumed %s", operation)
 				}
@@ -111,8 +119,10 @@ func TestTargetBranchAdmissionDefaultAllowsNonMain(t *testing.T) {
 			deps, mock, svc, ctx, repoID := setupLabelTest(t)
 			deps.TargetBranches = setting.branches
 			mock.ListOpenPRsFn = func(context.Context, string, string) ([]forge.PR, error) {
-				return []forge.PR{{Number: 42, State: "open", HeadSHA: "sha42", BaseBranch: "release/stable",
-					Labels: []string{"merge-queue"}}}, nil
+				return []forge.PR{{
+					Number: 42, State: "open", HeadSHA: "sha42", BaseBranch: "release/stable",
+					Labels: []string{"merge-queue"},
+				}}, nil
 			}
 			mock.CreateMergeBranchFn = func(context.Context, string, string, string, string, string) (string, bool, error) {
 				return "merge42", false, nil

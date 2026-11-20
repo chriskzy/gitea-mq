@@ -22,8 +22,8 @@ Alternatively, adding the merge label (default `merge-queue`, see
 `GITEA_MQ_MERGE_LABEL`) to a PR enqueues it without automerge. On GitHub this
 is the way to merge [stacked pull requests](https://gh.io/stacks), which have
 no auto-merge: label the topmost PR you want to merge, gitea-mq tests the
-whole stack against the stack's base branch and, on green, marks all stack
-heads as passed and performs the atomic stack merge itself. Stacked PRs
+whole stack against the stack's base branch once each unmerged member's PR
+checks pass. Stacked PRs
 without the label get a pending `gitea-mq` status hinting at this workflow.
 Removing the label removes the PR from the queue. The label only counts when
 added by a user with write access. Otherwise gitea-mq removes it and comments.
@@ -78,7 +78,7 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_POLL_INTERVAL` | no | `30s` | Reconcile poll interval for repos with active queue work |
 | `GITEA_MQ_IDLE_POLL_INTERVAL` | no | `15m` | Reconcile poll interval for idle repos (no active queue entries). Only used on forges that deliver CI status via webhooks (GitHub, Gitea >= 1.24); there idle repos are driven by webhooks and this periodic poll is just a safety net for deliveries missed while the service was down. Keeping it long bounds forge API usage to the number of repos with live queues rather than all managed repos |
 | `GITEA_MQ_CHECK_TIMEOUT` | no | `1h` | Timeout for required checks |
-| `GITEA_MQ_TARGET_BRANCHES` | no | empty (all) | Comma-separated exact branch names eligible for new queue admission; both PR base and resolved queue target must match. Set `main` for a main-only landing gate. |
+| `GITEA_MQ_TARGET_BRANCHES` | no | empty (all) | Comma-separated exact branch names eligible for new queue admission. Both the PR base and the resolved queue target must match. See [Restricting admission targets](#restricting-admission-targets). |
 | `GITEA_MQ_SKIP_QUEUE_IF_UP_TO_DATE` | no | `true` | Skip the merge-branch CI run when a PR is already rebased onto the target branch tip (its own green CI already covers the merged tree) |
 | `GITEA_MQ_REQUIRED_CHECKS` | no | - | Fallback required CI contexts when branch protection has none (comma-separated) |
 | `GITEA_MQ_PR_REQUIRED_CHECKS` | no | unset | Checks the PR head must pass before it is queued, instead of protection / `GITEA_MQ_REQUIRED_CHECKS`. Set to an empty value to not gate the PR head on CI. See [CI configuration](#ci-configuration) |
@@ -94,6 +94,7 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_LABEL_PREFIX` | no | `mq/` | Prefix of the queue state labels set on PRs (see [Queue labels](#queue-labels)); set to `none` to disable |
 | `GITEA_MQ_BATCH_MAX` | no | `1` | Max PRs tested together, **1–10 only**. `1` = batching off (legacy behaviour); 0 and values above 10 are rejected |
 | `GITEA_MQ_BATCH_POLICY_PATH` | no | unset | Enable adaptive FIFO grouping using the target-committed `required-check-policy.v1` routing JSON with an `adaptive_batch` v1 isolation contract. Missing/invalid inputs fall back to a singleton. |
+| `GITEA_MQ_NATIVE_STACK_MERGE` | no | `false` | Opt batched GitHub stacks into asynchronous native merges. See [Batching](#batching-bors-style). Nix option `nativeStackMerge`. |
 | `GITEA_MQ_BISECT_MAX_STEPS` | no | `0` | Cap on CI builds spent bisecting one batch. `0` = unlimited |
 | `GITEA_MQ_REFRESH_INTERVAL` | no | `10s` | Dashboard auto-refresh interval |
 | `GITEA_MQ_DISCOVERY_INTERVAL` | no | `5m` | How often to re-scan Gitea topics and GitHub installations |
@@ -128,6 +129,16 @@ Trade-offs and prerequisites:
 - Batched PRs land as **merge commits** regardless of the repo's configured
   merge style. A single PR that already contains the target tip is landed
   by fast-forwarding to its head (no merge commit, no extra CI run). Repos that mandate squash/rebase should leave `BATCH_MAX=1`.
+- Batched GitHub stacks fast-forward to the tested SHA by default. GitHub may
+  leave upper stack PRs open because their base branches did not move. With
+  `GITEA_MQ_NATIVE_STACK_MERGE=true`, GitHub stacks test alone and use GitHub's
+  asynchronous merge API. The queue checks the stack head and target before
+  submission. GitHub may merge onto a later target or use updated heads after
+  submission. The queue records an accepted submission as landed and waits a
+  bounded time for GitHub to finish. If the stack stays open, it can be queued
+  again after 10 minutes or a service restart. Queues configured to require
+  approvals, explicit merge-branch checks, or config-only check resolution
+  always use the fast-forward path.
 - A semantic conflict between two PRs that bisection puts in different halves
   can land both (each half passes alone). This matches bors-ng; keep
   `BATCH_MAX` modest if it bothers you.
@@ -523,10 +534,11 @@ PR. It auto-refreshes without JavaScript.
 For monitoring there are two endpoints:
 
 - `/healthz` (liveness): `200 ok` whenever the process serves HTTP.
-- `/readyz` (readiness): `200` only when PostgreSQL answers a ping and every
-  configured forge accepts gitea-mq's credentials (Gitea: `GET /user` with the
-  token; GitHub: `GET /app` with the App JWT), `503` otherwise. The JSON body
-  names each check, e.g. `{"status":"unavailable","checks":{"database":"ok","gitea":"401 ..."}}`.
+- `/readyz` (readiness) returns `200` when PostgreSQL answers a ping and every
+  configured forge accepts gitea-mq's credentials. Gitea uses
+  `GET /repos/search?limit=1` with the repository token. GitHub uses
+  `GET /app` with the App JWT. The endpoint returns `503` when a probe fails.
+  The JSON body reports `ok` or `unavailable` for each dependency.
   Results are cached for 10s so frequent probes do not add forge traffic.
 
 Repo and PR pages live under `/repo/{forge}/{owner}/{name}` (e.g.
@@ -539,6 +551,10 @@ The container workflow publishes a multi-arch (amd64/arm64) image to
 `ghcr.io/chriskzy/gitea-mq` (`:main`, `:vX.Y.Z`) after a successful build. It contains gitea-mq, git and
 CA certificates; configuration is via the environment variables above. It needs
 a PostgreSQL database; the bare-clone cache lives in `/var/cache/gitea-mq`.
+
+Locally built image configs include OCI revision and creation labels when the
+flake provides revision and timestamp metadata. The creation label uses the
+source timestamp so rebuilds are reproducible.
 
 ```yaml
 services:
@@ -626,6 +642,7 @@ Real-world deployments:
 | `checkTimeout` | string | `1h` | Check timeout |
 | `skipQueueIfUpToDate` | bool | `true` | Skip merge-branch CI for PRs already rebased onto the target tip |
 | `requiredChecks` | list of strings | `[]` | Fallback required CI contexts when branch protection has none |
+| `targetBranches` | list of strings | `[]` | Exact branch names eligible for new queue admission |
 | `prRequiredChecks` | null or list of strings | `null` | Checks the PR head must pass before queueing; `[]` = no PR-head gate |
 | `mergeRequiredChecks` | null or list of strings | `null` | Checks required on merge and batch branches |
 | `requiredChecksSource` | enum | `"protection"` | `"config"` uses `requiredChecks` only and never reads branch protection |
@@ -666,11 +683,10 @@ only PRs into main. Approval, automerge and label admission all check the PR
 base and resolved queue target before reading CI or creating a merge branch.
 An excluded PR keeps its merge intent and receives a deduplicated waiting
 status; retarget it through the normal dependency and review workflow.
-An unset or empty value preserves multi-branch behavior. Matching is exact,
-not a glob. This is an admission filter, not branch protection: existing queue
-entries still obey their original gates. Drain or contain incompatible entries
-before tightening the configured targets. All approval, dependency and required
-CI checks remain in place.
+An unset or empty value allows any branch. Matching uses exact names.
+Branch names containing commas cannot be represented in this list.
+The filter applies when PRs enter the queue. Drain affected entries before
+tightening the list if they should no longer land.
 
 ### Adaptive grouping
 
@@ -698,6 +714,8 @@ that add no suites. An aged head accepts no additional suites. Failure rates rem
 unavailable; no synthetic rates are assumed. Selection reasons and inputs appear in
 `batch_formed` event details. All PR-head checks, exact-head approvals, merge-branch
 native gates, bisection, restart recovery and rejected-head suppression still apply.
+With one queued candidate, the queue checks eligibility and routing but skips
+Actions timing requests because there is no other candidate to compare.
 
 Rollback needs no schema change: drain live batches and restore the saved image
 and configuration. Unsetting the policy flag restores fixed-size grouping; the
