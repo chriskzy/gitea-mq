@@ -529,10 +529,11 @@ PR. It auto-refreshes without JavaScript.
 For monitoring there are two endpoints:
 
 - `/healthz` (liveness): `200 ok` whenever the process serves HTTP.
-- `/readyz` (readiness): `200` only when PostgreSQL answers a ping and every
-  configured forge accepts gitea-mq's credentials (Gitea: `GET /user` with the
-  token; GitHub: `GET /app` with the App JWT), `503` otherwise. The JSON body
-  names each check, e.g. `{"status":"unavailable","checks":{"database":"ok","gitea":"401 ..."}}`.
+- `/readyz` (readiness) returns `200` when PostgreSQL answers a ping and every
+  configured forge accepts gitea-mq's credentials. Gitea uses
+  `GET /repos/search?limit=1` with the repository token. GitHub uses
+  `GET /app` with the App JWT. The endpoint returns `503` when a probe fails.
+  The JSON body reports `ok` or `unavailable` for each dependency.
   Results are cached for 10s so frequent probes do not add forge traffic.
 
 Repo and PR pages live under `/repo/{forge}/{owner}/{name}` (e.g.
@@ -545,6 +546,10 @@ The container workflow publishes a multi-arch (amd64/arm64) image to
 `ghcr.io/chriskzy/gitea-mq` (`:main`, `:vX.Y.Z`) after a successful build. It contains gitea-mq, git and
 CA certificates; configuration is via the environment variables above. It needs
 a PostgreSQL database; the bare-clone cache lives in `/var/cache/gitea-mq`.
+
+Locally built image configs include OCI revision and creation labels when the
+flake provides revision and timestamp metadata. The creation label uses the
+source timestamp so rebuilds are reproducible.
 
 ```yaml
 services:

@@ -60,7 +60,7 @@ and [CI configuration](docs/reference.md#ci-configuration) before enabling them.
 
 ## Observe and recover
 
-- Dashboard: `/`; liveness: `/healthz`; database/forge readiness: `/readyz`.
+- Dashboard at `/` and process liveness at `/healthz`. The `/readyz` endpoint reports whether PostgreSQL and the configured forges respond.
 - [Events, queue API, and metrics](docs/reference.md#queue-events).
 - [Failure details](docs/reference.md#failure-details) and
   [bounded infrastructure retries](docs/reference.md#retrying-infrastructure-failures).

@@ -741,9 +741,9 @@ func (c *HTTPClient) CreateWebhook(ctx context.Context, owner, repo string, opts
 }
 
 // Ping verifies the server is reachable and the token is still accepted.
-// GET /user
+// GET /repos/search?limit=1
 func (c *HTTPClient) Ping(ctx context.Context) error {
-	return c.doDiscard(ctx, http.MethodGet, "/user", nil, "get authenticated user")
+	return c.doDiscard(ctx, http.MethodGet, "/repos/search?limit=1", nil, "check repository API")
 }
 
 // ServerVersion returns the Gitea/Forgejo server version string.
