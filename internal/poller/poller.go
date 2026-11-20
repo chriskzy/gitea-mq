@@ -440,7 +440,8 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 		markWaiting(ctx, deps, pr.Number, pr.HeadSHA, draftStatus)
 		return
 	}
-	if source == sourceLabel && deps.Batch.Enabled() && landedOnTarget(ctx, deps, pr, targetBranch) {
+	_, supportsStacks := deps.Forge.(forge.StackResolver)
+	if source == sourceLabel && supportsStacks && deps.Batch.Enabled() && landedOnTarget(ctx, deps, pr, targetBranch) {
 		return
 	}
 	if !stackMembersGreen(ctx, deps, result, pr, stack, targetBranch) {
