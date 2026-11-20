@@ -94,6 +94,7 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_LABEL_PREFIX` | no | `mq/` | Prefix of the queue state labels set on PRs (see [Queue labels](#queue-labels)); set to `none` to disable |
 | `GITEA_MQ_BATCH_MAX` | no | `1` | Max PRs tested together, **1–10 only**. `1` = batching off (legacy behaviour); 0 and values above 10 are rejected |
 | `GITEA_MQ_BATCH_POLICY_PATH` | no | unset | Enable adaptive FIFO grouping using the target-committed `required-check-policy.v1` routing JSON with an `adaptive_batch` v1 isolation contract. Missing/invalid inputs fall back to a singleton. |
+| `GITEA_MQ_NATIVE_STACK_MERGE` | no | `false` | Opt batched GitHub stacks into asynchronous native merges. See [Batching](#batching-bors-style). Nix option `nativeStackMerge`. |
 | `GITEA_MQ_BISECT_MAX_STEPS` | no | `0` | Cap on CI builds spent bisecting one batch. `0` = unlimited |
 | `GITEA_MQ_REFRESH_INTERVAL` | no | `10s` | Dashboard auto-refresh interval |
 | `GITEA_MQ_DISCOVERY_INTERVAL` | no | `5m` | How often to re-scan Gitea topics and GitHub installations |
@@ -128,12 +129,16 @@ Trade-offs and prerequisites:
 - Batched PRs land as **merge commits** regardless of the repo's configured
   merge style. A single PR that already contains the target tip is landed
   by fast-forwarding to its head (no merge commit, no extra CI run). Repos that mandate squash/rebase should leave `BATCH_MAX=1`.
-- GitHub stacks use the forge's native merge flow. With batching enabled, a
-  stack is tested alone and the queue waits for the native merge to finish.
-  When approvals, explicit merge-branch checks, or config-only check resolution
-  are enabled, batches keep the tested-SHA fast-forward path. GitHub may leave
-  upper stack PRs open after a fast-forward because their base branches did
-  not move.
+- Batched GitHub stacks fast-forward to the tested SHA by default. GitHub may
+  leave upper stack PRs open because their base branches did not move. With
+  `GITEA_MQ_NATIVE_STACK_MERGE=true`, GitHub stacks test alone and use GitHub's
+  asynchronous merge API. The queue checks the stack head and target before
+  submission. GitHub may merge onto a later target or use updated heads after
+  submission. The queue records an accepted submission as landed and waits a
+  bounded time for GitHub to finish. If the stack stays open, it can be queued
+  again after 10 minutes or a service restart. Queues configured to require
+  approvals, explicit merge-branch checks, or config-only check resolution
+  always use the fast-forward path.
 - A semantic conflict between two PRs that bisection puts in different halves
   can land both (each half passes alone). This matches bors-ng; keep
   `BATCH_MAX` modest if it bothers you.
@@ -704,6 +709,8 @@ that add no suites. An aged head accepts no additional suites. Failure rates rem
 unavailable; no synthetic rates are assumed. Selection reasons and inputs appear in
 `batch_formed` event details. All PR-head checks, exact-head approvals, merge-branch
 native gates, bisection, restart recovery and rejected-head suppression still apply.
+With one queued candidate, the queue checks eligibility and routing but skips
+Actions timing requests because there is no other candidate to compare.
 
 Rollback needs no schema change: drain live batches and restore the saved image
 and configuration. Unsetting the policy flag restores fixed-size grouping; the

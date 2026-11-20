@@ -29,5 +29,7 @@ type BatchAdvisor interface {
 	BatchInputs(context.Context, string, string, string, string, []BatchCandidate) ([]BatchInput, error)
 }
 
-const BatchHardMax = 10
-const BatchMaxWait = 90 * time.Minute
+const (
+	BatchHardMax = 10
+	BatchMaxWait = 90 * time.Minute
+)

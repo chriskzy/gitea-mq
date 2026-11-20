@@ -174,7 +174,10 @@ func (f *giteaForge) enrichBatchInputs(ctx context.Context, owner, repo, branch 
 			continue
 		}
 		inputs[i].Blocked = len(deps) > 0
-
+	}
+	// A singleton has no marginal suite cost to compare.
+	if len(candidates) < 2 {
+		return inputs
 	}
 	// Missing or incomplete native observations remain unavailable. These only
 	// advise grouping; the protected gate still validates every selected job.
@@ -195,15 +198,19 @@ func (f *giteaForge) batchDurations(ctx context.Context, owner, repo, head strin
 		if run.HeadSHA != head || run.Event != "pull_request" {
 			continue
 		}
+		var jobs []ActionJob
+		jobsLoaded := false
 		for _, suite := range suites {
 			_, job, ok := strings.Cut(suite, " / ")
 			if !ok || seen[suite] || workflows[suite] == "" || strings.SplitN(run.Path, "@", 2)[0] != workflows[suite] {
 				continue
 			}
 			seen[suite] = true
-			jobs, err := f.client.ListRunJobs(ctx, owner, repo, run.ID)
-			if err != nil {
-				continue
+			if !jobsLoaded {
+				jobsLoaded = true
+				if listed, err := f.client.ListRunJobs(ctx, owner, repo, run.ID); err == nil {
+					jobs = listed
+				}
 			}
 			for _, j := range jobs {
 				if j.RunID != run.ID || j.HeadSHA != head || j.Name != strings.TrimSuffix(job, " (pull_request)") || j.Conclusion != "success" || j.StartedAt.Unix() <= 0 || !j.CompletedAt.After(j.StartedAt) {

@@ -2,7 +2,9 @@
 
 A merge queue for Gitea, Forgejo, and GitHub. It tests PRs against their target
 branch before landing them, keeping concurrent changes from breaking main.
-This fork builds on [Mic92/gitea-mq](https://github.com/Mic92/gitea-mq).
+This project is a fork of [Mic92/gitea-mq](https://github.com/Mic92/gitea-mq).
+Thank you to Mic92 and the [upstream contributors](https://github.com/Mic92/gitea-mq/graphs/contributors)
+for building and maintaining the queue.
 
 ## How it works
 

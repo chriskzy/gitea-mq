@@ -200,6 +200,7 @@ func TestGithub_BatchFlow_LabeledStack(t *testing.T) {
 	eng := &batch.Engine{
 		Forge: f, Queue: svc, Owner: "org", Repo: "app", RepoID: dbRepo.ID,
 		BatchMax: 5, SkipIfUpToDate: true, MergeLabel: "merge-queue",
+		NativeStackMerge:   true,
 		MergedPollInterval: 1, MergedPollAttempts: 1,
 		StackMergedPollInterval: 1, StackMergedPollAttempts: 1,
 	}

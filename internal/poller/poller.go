@@ -421,7 +421,7 @@ func enqueueAutoMergePRs(ctx context.Context, deps *Deps, result *PollResult, op
 			continue
 		}
 
-		enqueuePR(ctx, deps, result, pr, pr.BaseBranch, "automerge detection")
+		enqueuePR(ctx, deps, result, pr, pr.BaseBranch, "automerge detection", nil)
 	}
 }
 
@@ -429,7 +429,7 @@ func enqueueAutoMergePRs(ctx context.Context, deps *Deps, result *PollResult, op
 const draftStatus = "Draft PR: mark it ready for review to enter the queue"
 
 // enqueuePR adds a PR to the queue for targetBranch once its own CI is green.
-func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR, targetBranch, source string) {
+func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR, targetBranch, source string, stack *forge.Stack) {
 	if len(deps.TargetBranches) > 0 && (!slices.Contains(deps.TargetBranches, pr.BaseBranch) || !slices.Contains(deps.TargetBranches, targetBranch)) {
 		markWaiting(ctx, deps, pr.Number, pr.HeadSHA, "Target branch is not admitted by this queue")
 		return
@@ -438,6 +438,12 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 	// kept and the PR is queued once it is marked ready.
 	if pr.Draft {
 		markWaiting(ctx, deps, pr.Number, pr.HeadSHA, draftStatus)
+		return
+	}
+	if source == sourceLabel && deps.Batch.Enabled() && landedOnTarget(ctx, deps, pr, targetBranch) {
+		return
+	}
+	if !stackMembersGreen(ctx, deps, result, pr, stack, targetBranch) {
 		return
 	}
 
@@ -506,6 +512,8 @@ func enqueuePR(ctx context.Context, deps *Deps, result *PollResult, pr *forge.PR
 // reviews were already checked.
 const sourceApproval = "approval"
 
+const sourceLabel = "merge label"
+
 // approvalGate reports whether pr has the required approvals, posting a
 // waiting status when it does not. Always true when approvals are not
 // required.
@@ -553,7 +561,7 @@ func enqueueApprovedPRs(ctx context.Context, deps *Deps, result *PollResult, ope
 		if !ok {
 			continue
 		}
-		enqueuePR(ctx, deps, result, pr, pr.BaseBranch, sourceApproval)
+		enqueuePR(ctx, deps, result, pr, pr.BaseBranch, sourceApproval, nil)
 	}
 }
 
@@ -602,13 +610,7 @@ func enqueueLabeledPRs(ctx context.Context, deps *Deps, result *PollResult, open
 		if stack != nil {
 			target = stack.BaseBranch
 		}
-		if stack != nil && deps.Batch.Enabled() && landedOnTarget(ctx, deps, pr, target) {
-			continue
-		}
-		if !stackMembersGreen(ctx, deps, result, pr, stack, target) {
-			continue
-		}
-		enqueuePR(ctx, deps, result, pr, target, "merge label")
+		enqueuePR(ctx, deps, result, pr, target, sourceLabel, stack)
 	}
 }
 

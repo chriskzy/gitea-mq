@@ -147,7 +147,7 @@ func TestLabeledStackLandsViaStackMergeOnce(t *testing.T) {
 	deps.Batch = &batch.Engine{
 		Forge: mock, Queue: svc, Owner: "org", Repo: "app", RepoID: repoID,
 		SkipIfUpToDate: true, MergedPollInterval: 1, MergedPollAttempts: 1,
-		StackMergedPollInterval: 1, StackMergedPollAttempts: 1,
+		NativeStackMerge: true, StackMergedPollInterval: 1, StackMergedPollAttempts: 1,
 	}
 	mock.ListOpenPRsFn = func(context.Context, string, string) ([]forge.PR, error) {
 		return []forge.PR{

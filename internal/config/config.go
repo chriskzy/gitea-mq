@@ -36,6 +36,7 @@ type Config struct {
 	SkipQueueIfUpToDate bool
 	BatchMax            int
 	BatchPolicyPath     string
+	NativeStackMerge    bool
 	BisectMaxSteps      int
 	RefreshInterval     time.Duration
 	DiscoveryInterval   time.Duration
@@ -249,6 +250,10 @@ func Load() (*Config, error) {
 	}
 	if cfg.BatchMax > 10 {
 		return nil, fmt.Errorf("GITEA_MQ_BATCH_MAX must be between 1 and 10")
+	}
+	cfg.NativeStackMerge, err = parseBool("GITEA_MQ_NATIVE_STACK_MERGE", false)
+	if err != nil {
+		return nil, err
 	}
 	cfg.BisectMaxSteps, err = parseInt("GITEA_MQ_BISECT_MAX_STEPS", 0, 0)
 	if err != nil {

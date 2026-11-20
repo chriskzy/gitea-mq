@@ -640,9 +640,13 @@ func TestEnsureMergedOrClose_MarksMerged(t *testing.T) {
 type reviewForge struct {
 	*forge.MockForge
 	approved map[int64]bool
+	err      error
 }
 
 func (r *reviewForge) GetReviews(_ context.Context, _, _ string, n int64, _ string) (forge.Reviews, error) {
+	if r.err != nil {
+		return forge.Reviews{}, r.err
+	}
 	if r.approved[n] {
 		return forge.Reviews{Approvals: 1}, nil
 	}
@@ -787,19 +791,22 @@ func isMQSuccess(sha string) func(forge.MockCall) bool {
 }
 
 func TestStackLandingProtectedGates(t *testing.T) {
-	// Cover every nonempty combination of the three protected settings and
-	// both approval outcomes when approval is required.
-	for settings := 1; settings < 8; settings++ {
-		for _, approved := range []bool{false, true} {
+	// Cover the default and every protected combination even with native
+	// merging opted in, including each required-approval outcome.
+	unavailable := errors.New("review API unavailable")
+	for settings := 0; settings < 8; settings++ {
+		for _, review := range []string{"approved", "changes-requested", "unavailable"} {
 			requireApproval := settings&1 != 0
-			if !requireApproval && !approved {
+			if !requireApproval && review != "approved" {
 				continue
 			}
-			t.Run(fmt.Sprintf("settings=%03b/approved=%t", settings, approved), func(t *testing.T) {
+			t.Run(fmt.Sprintf("settings=%03b/review=%s", settings, review), func(t *testing.T) {
 				e, f, svc, ctx := setup(t, 10)
 				stackFor(f, 10)
 				f.merged[10] = true
-				e.Forge = &reviewForge{MockForge: f.MockForge, approved: map[int64]bool{10: approved}}
+				reviewer := &reviewForge{MockForge: f.MockForge, approved: map[int64]bool{10: review != "changes-requested"}}
+				e.Forge = reviewer
+				e.NativeStackMerge = settings != 0
 				e.Approval = forge.ApprovalPolicy{Require: requireApproval, Count: 1}
 				e.FallbackChecks = []string{"ci"}
 				if settings&2 != 0 {
@@ -823,11 +830,26 @@ func TestStackLandingProtectedGates(t *testing.T) {
 				if f.target != initial || len(f.CallsTo("MergePR")) != 0 {
 					t.Fatal("stale check advanced a protected stack")
 				}
+				if review == "unavailable" {
+					reviewer.err = unavailable
+					if err := e.HandleCheck(ctx, entry, "ci", pg.CheckStateSuccess, ""); !errors.Is(err, unavailable) {
+						t.Fatalf("expected the review lookup error, got %v", err)
+					}
+					live := mustLive(t, svc, ctx, e.RepoID)
+					if f.target != initial || live.BranchSha != b.BranchSha || live.Builds != 1 || len(f.CallsTo("MergePR")) != 0 {
+						t.Fatalf("review lookup failure changed the target or tested batch: %+v", live)
+					}
+					checks, err := svc.GetCheckStatuses(ctx, entry.ID)
+					if err != nil || len(checks) != 1 || checks[0].Context != "ci" || checks[0].State != pg.CheckStateSuccess {
+						t.Fatalf("lost green CI while waiting for review: %+v, %v", checks, err)
+					}
+					reviewer.err = nil
+				}
 				if err := e.HandleCheck(ctx, entry, "ci", pg.CheckStateSuccess, ""); err != nil {
 					t.Fatal(err)
 				}
 				wantTip := initial
-				if approved {
+				if review != "changes-requested" {
 					wantTip = b.BranchSha.String
 				}
 				if f.target != wantTip || len(f.CallsTo("MergePR")) != 0 {
@@ -842,6 +864,7 @@ func TestStackLandingProtectedGates(t *testing.T) {
 // lands through the forge's stack merge with every member head green first.
 func TestHandlePass_StackEntryLandsViaMergePR(t *testing.T) {
 	e, f, svc, ctx := setup(t, 10)
+	e.NativeStackMerge = true
 	stackFor(f, 10)
 	f.merged[10] = true
 	e.StackMergedPollInterval, e.StackMergedPollAttempts = 1, 1
@@ -888,6 +911,7 @@ func TestHandlePass_StackEntryLandsViaMergePR(t *testing.T) {
 // member's checks as well tripled the forge calls of landing a large stack.
 func TestHandlePass_StackCleansMirrorsOnQueuedHeadOnly(t *testing.T) {
 	e, f, _, ctx := setup(t, 10)
+	e.NativeStackMerge = true
 	stackFor(f, 10)
 	f.merged[10] = true
 	e.StackMergedPollInterval, e.StackMergedPollAttempts = 1, 1
@@ -912,6 +936,7 @@ func TestHandlePass_StackCleansMirrorsOnQueuedHeadOnly(t *testing.T) {
 // The wait for GitHub to report a stack merged grows with its members.
 func TestHandlePass_StackMergedWaitGrowsWithMembers(t *testing.T) {
 	e, f, _, ctx := setup(t, 10)
+	e.NativeStackMerge = true
 	stackFor(f, 10)
 	e.StackMergedPollInterval = 1
 	polls := 0
@@ -936,6 +961,7 @@ func TestHandlePass_StackMergedWaitGrowsWithMembers(t *testing.T) {
 // FF in queue order.
 func TestFormAndBuild_StackEntryIsNotBatched(t *testing.T) {
 	e, f, svc, ctx := setup(t, 10, 20, 30)
+	e.NativeStackMerge = true
 	stackFor(f, 20)
 	for _, n := range []int64{10, 20, 30} {
 		f.merged[n] = true
@@ -990,6 +1016,7 @@ func TestFormAndBuild_StackEntryIsNotBatched(t *testing.T) {
 
 func TestHandlePass_StackMergeErrorEjects(t *testing.T) {
 	e, f, svc, ctx := setup(t, 10)
+	e.NativeStackMerge = true
 	stackFor(f, 10)
 	e.MergeLabel = "merge-queue"
 	f.MergePRFn = func(context.Context, string, string, int64) error {
@@ -1025,6 +1052,7 @@ func TestHandlePass_StackMergeErrorEjects(t *testing.T) {
 // untested content: rebuild instead of calling the forge.
 func TestHandlePass_StackTargetMovedRebuilds(t *testing.T) {
 	e, f, _, ctx := setup(t, 10)
+	e.NativeStackMerge = true
 	stackFor(f, 10)
 	f.merged[10] = true
 	e.StackMergedPollInterval, e.StackMergedPollAttempts = 1, 1
@@ -1039,5 +1067,35 @@ func TestHandlePass_StackTargetMovedRebuilds(t *testing.T) {
 	}
 	if b.State != pg.BatchStateTesting || b.FfRetries != 1 || b.Builds != 2 || !strings.Contains(b.BranchSha.String, "main1") {
 		t.Fatalf("batch not rebuilt on the new tip: %+v", b)
+	}
+}
+
+func TestHandlePass_NativeStackRejectsChangedHeadOrBase(t *testing.T) {
+	for _, change := range []string{"head", "base"} {
+		t.Run(change, func(t *testing.T) {
+			e, f, _, ctx := setup(t, 10)
+			e.NativeStackMerge = true
+			stackFor(f, 10)
+			b, err := e.FormAndBuild(ctx, "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolve := f.ResolveStackFn
+			f.ResolveStackFn = func(ctx context.Context, owner, repo string, number int64) (*forge.Stack, error) {
+				stack, err := resolve(ctx, owner, repo, number)
+				if change == "head" {
+					stack.PRs[2].HeadSHA = "updated-head"
+				} else {
+					stack.BaseBranch = "updated-base"
+				}
+				return stack, err
+			}
+			if err := e.HandlePass(ctx, b); err == nil || !strings.Contains(err.Error(), "stack head or target changed") {
+				t.Fatalf("expected a stale stack error, got %v", err)
+			}
+			if len(f.CallsTo("MergePR")) != 0 || len(f.CallsTo("FastForward")) != 0 || len(f.CallsTo("SetMQStatus")) != 1 {
+				t.Fatal("changed stack received landing status or action")
+			}
+		})
 	}
 }

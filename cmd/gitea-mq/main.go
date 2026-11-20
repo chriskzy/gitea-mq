@@ -185,6 +185,7 @@ func run() error {
 		SkipQueueIfUpToDate: cfg.SkipQueueIfUpToDate,
 		BatchMax:            cfg.BatchMax,
 		BatchPolicyPath:     cfg.BatchPolicyPath,
+		NativeStackMerge:    cfg.NativeStackMerge,
 		BisectMaxSteps:      cfg.BisectMaxSteps,
 	})
 

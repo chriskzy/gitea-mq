@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -50,9 +51,11 @@ type Engine struct {
 
 	BatchMax        int
 	BatchPolicyPath string
-	BisectMaxSteps  int
-	CheckTimeout    time.Duration
-	FallbackChecks  []string
+	// NativeStackMerge opts batched GitHub stacks into the forge's async API.
+	NativeStackMerge bool
+	BisectMaxSteps   int
+	CheckTimeout     time.Duration
+	FallbackChecks   []string
 	// ChecksFromConfig skips branch protection and uses FallbackChecks only.
 	ChecksFromConfig bool
 	// MergeChecks, when non-nil, replaces the required checks on batch
@@ -131,7 +134,11 @@ func (e *Engine) rememberLanded(prNumber int64, headSHA string) {
 	if e.landedStacks == nil {
 		e.landedStacks = make(map[int64]landedStack)
 	}
-	e.landedStacks[prNumber] = landedStack{headSHA: headSHA, at: time.Now()}
+	now := time.Now()
+	maps.DeleteFunc(e.landedStacks, func(_ int64, landed landedStack) bool {
+		return now.Sub(landed.at) > landedStackTTL
+	})
+	e.landedStacks[prNumber] = landedStack{headSHA: headSHA, at: now}
 }
 
 // lock returns the per-target-branch unlock func. Batches for different
@@ -159,7 +166,7 @@ func (e *Engine) Enabled() bool { return e != nil && e.BatchMax != 1 }
 // The forge's asynchronous stack API cannot pin the tested target or head.
 func (e *Engine) usesNativeStackMerge() bool {
 	_, supportsStacks := e.Forge.(forge.StackResolver)
-	return supportsStacks && !e.Approval.Require && e.MergeChecks == nil && !e.ChecksFromConfig
+	return e.NativeStackMerge && supportsStacks && !e.Approval.Require && e.MergeChecks == nil && !e.ChecksFromConfig
 }
 
 // pendingStack is the JSONB stack of int64 slices stored on the batch row.
@@ -343,17 +350,19 @@ func (e *Engine) Build(ctx context.Context, b *pg.Batch) error {
 	return nil
 }
 
-// isStackTop reports whether ent tops a stack with at least two unmerged
-// members. A lone bottom PR targets the branch itself, so the forge marks it
-// merged after a fast-forward.
-func (e *Engine) isStackTop(ctx context.Context, ent *pg.QueueEntry) (bool, error) {
+// nativeStack returns stack members when the entry needs a native merge.
+// A lone bottom PR targets the branch itself and can fast-forward.
+func (e *Engine) nativeStack(ctx context.Context, ent *pg.QueueEntry) ([]forge.StackPR, error) {
 	stack, err := forge.ResolveStack(ctx, e.Forge, e.Owner, e.Repo, ent.PrNumber)
 	if err != nil || stack == nil {
-		return false, err
+		return nil, err
 	}
 	members, ok := stack.MembersUpTo(ent.PrNumber)
 	if !ok {
-		return false, nil
+		return nil, nil
+	}
+	if stack.BaseBranch != ent.TargetBranch || members[len(members)-1].HeadSHA != ent.PrHeadSha {
+		return nil, fmt.Errorf("resolved stack head or target changed for PR #%d", ent.PrNumber)
 	}
 	unmerged := 0
 	for _, m := range members {
@@ -361,7 +370,10 @@ func (e *Engine) isStackTop(ctx context.Context, ent *pg.QueueEntry) (bool, erro
 			unmerged++
 		}
 	}
-	return unmerged >= 2, nil
+	if unmerged < 2 {
+		return nil, nil
+	}
+	return members, nil
 }
 
 // deferStackTops keeps stack tops out of shared batches, since a stack lands
@@ -374,11 +386,11 @@ func (e *Engine) deferStackTops(ctx context.Context, b *pg.Batch, entries []pg.Q
 	}
 	cut := len(entries)
 	for i := range entries {
-		top, err := e.isStackTop(ctx, &entries[i])
+		members, err := e.nativeStack(ctx, &entries[i])
 		if err != nil {
 			return nil, err
 		}
-		if top {
+		if members != nil {
 			cut = max(i, 1)
 			break
 		}
@@ -471,12 +483,12 @@ func (e *Engine) HandlePass(ctx context.Context, b *pg.Batch) error {
 		return e.rebuild(ctx, b)
 	}
 	if len(entries) == 1 && e.usesNativeStackMerge() {
-		top, err := e.isStackTop(ctx, &entries[0])
+		members, err := e.nativeStack(ctx, &entries[0])
 		if err != nil {
 			return err
 		}
-		if top {
-			return e.landStack(ctx, b, &entries[0])
+		if members != nil {
+			return e.landStack(ctx, b, &entries[0], members)
 		}
 	}
 	statusHeads, err := e.landedStatusHeads(ctx, entries)
@@ -566,7 +578,7 @@ func (e *Engine) retryMoved(ctx context.Context, b *pg.Batch, when string) (bool
 // merge-async). A fast-forward would land the commits but leave every member
 // above the bottom open: their bases are stack branches, which never move.
 // The forge re-checks gitea-mq on every member, so all are set first.
-func (e *Engine) landStack(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry) error {
+func (e *Engine) landStack(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry, members []forge.StackPR) error {
 	// The forge merges onto the current target tip, which must be the tested one.
 	up, err := e.Forge.IsUpToDate(ctx, e.Owner, e.Repo, b.TargetBranch, b.BranchSha.String)
 	if err != nil {
@@ -583,15 +595,14 @@ func (e *Engine) landStack(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry)
 		return e.next(ctx, b)
 	}
 
-	statusHeads, err := e.landedStatusHeads(ctx, []pg.QueueEntry{*ent})
-	if err != nil {
-		return err
-	}
 	setAll := func(st forge.MQStatus) {
-		for _, head := range statusHeads {
-			st.TargetURL = e.prURL(head.prNumber)
-			logutil.WarnIfErr(e.Forge.SetMQStatus(ctx, e.Owner, e.Repo, head.sha, st),
-				"set mq status failed", "pr", head.prNumber)
+		for _, m := range members {
+			if m.Merged {
+				continue
+			}
+			st.TargetURL = e.prURL(m.Number)
+			logutil.WarnIfErr(e.Forge.SetMQStatus(ctx, e.Owner, e.Repo, m.HeadSHA, st),
+				"set mq status failed", "pr", m.Number)
 		}
 	}
 	setAll(forge.MQStatus{State: pg.CheckStateSuccess, Description: fmt.Sprintf("Merging stack via batch #%d", b.ID)})
@@ -623,7 +634,7 @@ func (e *Engine) landStack(ctx context.Context, b *pg.Batch, ent *pg.QueueEntry)
 
 	// The next batch would race GitHub's merge on the target, so wait for it;
 	// unlike ensureMergedOrClose, never close, which would race it too.
-	attempts := cmp.Or(e.StackMergedPollAttempts, stackMergedBaseAttempts+stackMergedAttemptsPerMember*len(statusHeads))
+	attempts := cmp.Or(e.StackMergedPollAttempts, stackMergedBaseAttempts+stackMergedAttemptsPerMember*len(members))
 	if !e.waitMerged(ctx, ent.PrNumber, cmp.Or(e.StackMergedPollInterval, time.Second), attempts) {
 		slog.Warn("stack merge not reported by forge yet", "batch", b.ID, "pr", ent.PrNumber)
 	}
@@ -1062,7 +1073,7 @@ const UnapprovedComment = "⏸️ Removed from merge queue: this PR no longer ha
 
 // holdUnapproved drops members that lost their approval while the batch
 // tested, keeping their merge intent; like holdBlocked the caller rebuilds.
-// A failed review lookup holds nobody back, matching the poller.
+// A failed review lookup leaves the tested batch in place for retry.
 func (e *Engine) holdUnapproved(ctx context.Context, b *pg.Batch, entries []pg.QueueEntry) (bool, error) {
 	if !e.Approval.Require {
 		return false, nil
@@ -1071,8 +1082,7 @@ func (e *Engine) holdUnapproved(ctx context.Context, b *pg.Batch, entries []pg.Q
 	for i := range entries {
 		ok, rv, needed, err := e.Approval.Check(ctx, e.Forge, e.Owner, e.Repo, b.TargetBranch, entries[i].PrNumber, entries[i].PrHeadSha)
 		if err != nil {
-			slog.Warn("pre-land approval check failed, landing anyway", "pr", entries[i].PrNumber, "error", err)
-			continue
+			return false, fmt.Errorf("check approval before landing PR #%d: %w", entries[i].PrNumber, err)
 		}
 		if !ok {
 			unapproved[entries[i].ID] = forge.WaitingStatus(rv, needed)
