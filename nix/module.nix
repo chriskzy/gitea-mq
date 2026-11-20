@@ -166,6 +166,12 @@ in
       description = "Fallback required check contexts (if branch protection doesn't specify them).";
     };
 
+    targetBranches = lib.mkOption {
+      type = lib.types.listOf (lib.types.strMatching "[^,[:space:]]+");
+      default = [ ];
+      description = "Exact PR base and queue target branch names eligible for new queue admission. Empty allows all.";
+    };
+
     prRequiredChecks = lib.mkOption {
       type = lib.types.nullOr (lib.types.listOf lib.types.str);
       default = null;
@@ -457,6 +463,9 @@ in
       }
       // lib.optionalAttrs (cfg.requiredChecks != [ ]) {
         GITEA_MQ_REQUIRED_CHECKS = lib.concatStringsSep "," cfg.requiredChecks;
+      }
+      // lib.optionalAttrs (cfg.targetBranches != [ ]) {
+        GITEA_MQ_TARGET_BRANCHES = lib.concatStringsSep "," cfg.targetBranches;
       }
       // lib.optionalAttrs (cfg.prRequiredChecks != null) {
         GITEA_MQ_PR_REQUIRED_CHECKS = lib.concatStringsSep "," cfg.prRequiredChecks;

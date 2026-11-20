@@ -45,7 +45,7 @@ access. For preconfigured repositories, use the
 
 | Setting | Purpose |
 |---|---|
-| `GITEA_MQ_TARGET_BRANCHES=main` | Admit only PRs targeting main. |
+| `GITEA_MQ_TARGET_BRANCHES=main` | Admit new PRs whose base and queue target are both `main`. |
 | `GITEA_MQ_REQUIRE_APPROVAL=true` | Check approvals before admission and landing. |
 | `GITEA_MQ_ENQUEUE_ON_APPROVAL=true` | Use approval as merge intent. |
 | `GITEA_MQ_PR_REQUIRED_CHECKS` | Required contexts on the PR head. |
