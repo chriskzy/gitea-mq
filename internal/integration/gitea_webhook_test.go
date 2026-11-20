@@ -9,8 +9,7 @@ import (
 	"github.com/Mic92/gitea-mq/internal/testutil"
 )
 
-// The auto-created hook must subscribe to PR events so label changes, pushes
-// and reviews reconcile immediately, and Gitea must accept the event names.
+// Gitea must accept the event names we subscribe to.
 func TestGiteaEnsureWebhookSubscribesPREvents(t *testing.T) {
 	giteaServer := testutil.GiteaInstance()
 	if giteaServer == nil {
@@ -21,7 +20,8 @@ func TestGiteaEnsureWebhookSubscribesPREvents(t *testing.T) {
 	api := testutil.NewGiteaAPI(giteaServer.URL)
 	api.CreateToken(t)
 	const repoName = "webhook-events"
-	api.MustDo(t, "POST", "/user/repos", `{"name": "`+repoName+`", "auto_init": true, "default_branch": "main"}`)
+	// Webhook setup needs no commits; avoid running generated hooks in the Nix sandbox.
+	api.MustDo(t, "POST", "/user/repos", `{"name": "`+repoName+`", "auto_init": false, "default_branch": "main"}`)
 
 	client := gitea.NewHTTPClient(giteaServer.URL, api.Token)
 	const url = "https://mq.example.com/webhook/gitea"
