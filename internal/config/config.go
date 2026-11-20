@@ -206,7 +206,11 @@ func Load() (*Config, error) {
 	}
 
 	cfg.RequiredChecks = parseList(os.Getenv("GITEA_MQ_REQUIRED_CHECKS"))
-	cfg.TargetBranches = parseList(os.Getenv("GITEA_MQ_TARGET_BRANCHES"))
+	targetBranches := os.Getenv("GITEA_MQ_TARGET_BRANCHES")
+	cfg.TargetBranches = parseList(targetBranches)
+	if targetBranches != "" && len(cfg.TargetBranches) == 0 {
+		return nil, fmt.Errorf("GITEA_MQ_TARGET_BRANCHES: no branch names specified")
+	}
 	cfg.PRRequiredChecks = optionalList("GITEA_MQ_PR_REQUIRED_CHECKS")
 	cfg.MergeRequiredChecks = optionalList("GITEA_MQ_MERGE_REQUIRED_CHECKS")
 

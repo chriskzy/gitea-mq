@@ -47,7 +47,7 @@ access. For preconfigured repositories, use the
 
 | Setting | Purpose |
 |---|---|
-| `GITEA_MQ_TARGET_BRANCHES=main` | Admit only PRs targeting main. |
+| `GITEA_MQ_TARGET_BRANCHES=main` | Admit new PRs whose base and queue target are both `main`. |
 | `GITEA_MQ_REQUIRE_APPROVAL=true` | Check approvals before admission and landing. |
 | `GITEA_MQ_ENQUEUE_ON_APPROVAL=true` | Use approval as merge intent. |
 | `GITEA_MQ_PR_REQUIRED_CHECKS` | Required contexts on the PR head. |
@@ -62,7 +62,7 @@ and [CI configuration](docs/reference.md#ci-configuration) before enabling them.
 
 ## Observe and recover
 
-- Dashboard: `/`; liveness: `/healthz`; database/forge readiness: `/readyz`.
+- Dashboard at `/` and process liveness at `/healthz`. The `/readyz` endpoint reports whether PostgreSQL and the configured forges respond.
 - [Events, queue API, and metrics](docs/reference.md#queue-events).
 - [Failure details](docs/reference.md#failure-details) and
   [bounded infrastructure retries](docs/reference.md#retrying-infrastructure-failures).

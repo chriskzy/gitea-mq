@@ -34,7 +34,6 @@ type Readiness struct {
 type report struct {
 	Status string            `json:"status"`
 	Checks map[string]string `json:"checks"`
-	ok     bool
 }
 
 func (r *Readiness) now() time.Time {
@@ -51,24 +50,24 @@ func (r *Readiness) run(ctx context.Context) report {
 		return r.cached
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	// A canceled HTTP request must not affect the cached result for other callers.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.Timeout)
 	defer cancel()
 
-	results := make([]error, len(r.Checks))
+	passed := make([]bool, len(r.Checks))
 	var wg sync.WaitGroup
 	for i, c := range r.Checks {
-		wg.Go(func() { results[i] = c.Probe(ctx) })
+		wg.Go(func() { passed[i] = c.Probe(ctx) == nil })
 	}
 	wg.Wait()
 
-	rep := report{Status: "ok", Checks: make(map[string]string, len(r.Checks)), ok: true}
+	rep := report{Status: "ok", Checks: make(map[string]string, len(r.Checks))}
 	for i, c := range r.Checks {
-		if err := results[i]; err != nil {
-			rep.Checks[c.Name] = err.Error()
-			rep.Status = "unavailable"
-			rep.ok = false
-		} else {
+		if passed[i] {
 			rep.Checks[c.Name] = "ok"
+		} else {
+			rep.Checks[c.Name] = "unavailable"
+			rep.Status = "unavailable"
 		}
 	}
 	r.cached, r.cachedAt = rep, r.now()
@@ -81,7 +80,7 @@ func (r *Readiness) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	rep := r.run(req.Context())
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	if !rep.ok {
+	if rep.Status != "ok" {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	_ = json.NewEncoder(w).Encode(rep)

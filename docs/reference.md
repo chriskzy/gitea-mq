@@ -78,7 +78,7 @@ key is read verbatim). If both forms are set, the plain variable wins.
 | `GITEA_MQ_POLL_INTERVAL` | no | `30s` | Reconcile poll interval for repos with active queue work |
 | `GITEA_MQ_IDLE_POLL_INTERVAL` | no | `15m` | Reconcile poll interval for idle repos (no active queue entries). Only used on forges that deliver CI status via webhooks (GitHub, Gitea >= 1.24); there idle repos are driven by webhooks and this periodic poll is just a safety net for deliveries missed while the service was down. Keeping it long bounds forge API usage to the number of repos with live queues rather than all managed repos |
 | `GITEA_MQ_CHECK_TIMEOUT` | no | `1h` | Timeout for required checks |
-| `GITEA_MQ_TARGET_BRANCHES` | no | empty (all) | Comma-separated exact branch names eligible for new queue admission; both PR base and resolved queue target must match. Set `main` for a main-only landing gate. |
+| `GITEA_MQ_TARGET_BRANCHES` | no | empty (all) | Comma-separated exact branch names eligible for new queue admission. Both the PR base and the resolved queue target must match. See [Restricting admission targets](#restricting-admission-targets). |
 | `GITEA_MQ_SKIP_QUEUE_IF_UP_TO_DATE` | no | `true` | Skip the merge-branch CI run when a PR is already rebased onto the target branch tip (its own green CI already covers the merged tree) |
 | `GITEA_MQ_REQUIRED_CHECKS` | no | - | Fallback required CI contexts when branch protection has none (comma-separated) |
 | `GITEA_MQ_PR_REQUIRED_CHECKS` | no | unset | Checks the PR head must pass before it is queued, instead of protection / `GITEA_MQ_REQUIRED_CHECKS`. Set to an empty value to not gate the PR head on CI. See [CI configuration](#ci-configuration) |
@@ -534,10 +534,11 @@ PR. It auto-refreshes without JavaScript.
 For monitoring there are two endpoints:
 
 - `/healthz` (liveness): `200 ok` whenever the process serves HTTP.
-- `/readyz` (readiness): `200` only when PostgreSQL answers a ping and every
-  configured forge accepts gitea-mq's credentials (Gitea: `GET /user` with the
-  token; GitHub: `GET /app` with the App JWT), `503` otherwise. The JSON body
-  names each check, e.g. `{"status":"unavailable","checks":{"database":"ok","gitea":"401 ..."}}`.
+- `/readyz` (readiness) returns `200` when PostgreSQL answers a ping and every
+  configured forge accepts gitea-mq's credentials. Gitea uses
+  `GET /repos/search?limit=1` with the repository token. GitHub uses
+  `GET /app` with the App JWT. The endpoint returns `503` when a probe fails.
+  The JSON body reports `ok` or `unavailable` for each dependency.
   Results are cached for 10s so frequent probes do not add forge traffic.
 
 Repo and PR pages live under `/repo/{forge}/{owner}/{name}` (e.g.
@@ -550,6 +551,10 @@ The container workflow publishes a multi-arch (amd64/arm64) image to
 `ghcr.io/chriskzy/gitea-mq` (`:main`, `:vX.Y.Z`) after a successful build. It contains gitea-mq, git and
 CA certificates; configuration is via the environment variables above. It needs
 a PostgreSQL database; the bare-clone cache lives in `/var/cache/gitea-mq`.
+
+Locally built image configs include OCI revision and creation labels when the
+flake provides revision and timestamp metadata. The creation label uses the
+source timestamp so rebuilds are reproducible.
 
 ```yaml
 services:
@@ -637,6 +642,7 @@ Real-world deployments:
 | `checkTimeout` | string | `1h` | Check timeout |
 | `skipQueueIfUpToDate` | bool | `true` | Skip merge-branch CI for PRs already rebased onto the target tip |
 | `requiredChecks` | list of strings | `[]` | Fallback required CI contexts when branch protection has none |
+| `targetBranches` | list of strings | `[]` | Exact branch names eligible for new queue admission |
 | `prRequiredChecks` | null or list of strings | `null` | Checks the PR head must pass before queueing; `[]` = no PR-head gate |
 | `mergeRequiredChecks` | null or list of strings | `null` | Checks required on merge and batch branches |
 | `requiredChecksSource` | enum | `"protection"` | `"config"` uses `requiredChecks` only and never reads branch protection |
@@ -677,11 +683,10 @@ only PRs into main. Approval, automerge and label admission all check the PR
 base and resolved queue target before reading CI or creating a merge branch.
 An excluded PR keeps its merge intent and receives a deduplicated waiting
 status; retarget it through the normal dependency and review workflow.
-An unset or empty value preserves multi-branch behavior. Matching is exact,
-not a glob. This is an admission filter, not branch protection: existing queue
-entries still obey their original gates. Drain or contain incompatible entries
-before tightening the configured targets. All approval, dependency and required
-CI checks remain in place.
+An unset or empty value allows any branch. Matching uses exact names.
+Branch names containing commas cannot be represented in this list.
+The filter applies when PRs enter the queue. Drain affected entries before
+tightening the list if they should no longer land.
 
 ### Adaptive grouping
 
