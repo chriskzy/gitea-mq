@@ -22,8 +22,8 @@ Alternatively, adding the merge label (default `merge-queue`, see
 `GITEA_MQ_MERGE_LABEL`) to a PR enqueues it without automerge. On GitHub this
 is the way to merge [stacked pull requests](https://gh.io/stacks), which have
 no auto-merge: label the topmost PR you want to merge, gitea-mq tests the
-whole stack against the stack's base branch and, on green, marks all stack
-heads as passed and performs the atomic stack merge itself. Stacked PRs
+whole stack against the stack's base branch once each unmerged member's PR
+checks pass. Stacked PRs
 without the label get a pending `gitea-mq` status hinting at this workflow.
 Removing the label removes the PR from the queue. The label only counts when
 added by a user with write access. Otherwise gitea-mq removes it and comments.
@@ -128,6 +128,12 @@ Trade-offs and prerequisites:
 - Batched PRs land as **merge commits** regardless of the repo's configured
   merge style. A single PR that already contains the target tip is landed
   by fast-forwarding to its head (no merge commit, no extra CI run). Repos that mandate squash/rebase should leave `BATCH_MAX=1`.
+- GitHub stacks use the forge's native merge flow. With batching enabled, a
+  stack is tested alone and the queue waits for the native merge to finish.
+  When approvals, explicit merge-branch checks, or config-only check resolution
+  are enabled, batches keep the tested-SHA fast-forward path. GitHub may leave
+  upper stack PRs open after a fast-forward because their base branches did
+  not move.
 - A semantic conflict between two PRs that bisection puts in different halves
   can land both (each half passes alone). This matches bors-ng; keep
   `BATCH_MAX` modest if it bothers you.
