@@ -81,6 +81,7 @@ in
 pkgs.stdenvNoCC.mkDerivation {
   name = "${gitea-mq.pname}-docker";
   inherit (gitea-mq) version;
+  passthru = { inherit platforms; };
   phases = [ "installPhase" ];
   src = pkgs.linkFarm "images" (lib.mapAttrsToList (name: path: { inherit name path; }) platforms);
   nativeBuildInputs = [ pkgs.regctl ];

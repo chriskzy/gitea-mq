@@ -16,6 +16,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
+    if: inputs.publish
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -92,3 +93,64 @@ jobs:
           while IFS= read -r tag; do
             regctl image copy "ocidir://local:gitea-mq" "$tag"
           done <<< "$TAGS"
+  cross:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch' && !inputs.publish
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            extra-substituters = https://cache.thalheim.io
+            extra-trusted-public-keys = cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc=
+      - name: Cross-build both images on one runner
+        run: nix build .#gitea-mq-docker --print-build-logs
+  native:
+    if: github.event_name == 'workflow_dispatch' && !inputs.publish
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            extra-substituters = https://cache.thalheim.io
+            extra-trusted-public-keys = cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc=
+      - name: Build the native platform image
+        env:
+          NIX_SYSTEM: ${{ matrix.system }}
+        run: |
+          nix build ".#gitea-mq-docker.platforms.$NIX_SYSTEM" --print-build-logs
+          cp result "$RUNNER_TEMP/$NIX_SYSTEM.tar"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-${{ matrix.system }}
+          path: ${{ runner.temp }}/${{ matrix.system }}.tar
+          retention-days: 1
+          if-no-files-found: error
+  assemble:
+    needs: native
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: image-*
+          merge-multiple: true
+      - name: Assemble and verify both native image manifests
+        run: |
+          tool="$(nix build --inputs-from . nixpkgs#regctl --print-out-paths --no-link)/bin/regctl"
+          "$tool" image import ocidir://native:amd64 x86_64-linux.tar
+          "$tool" image import ocidir://native:arm64 aarch64-linux.tar
+          "$tool" index create ocidir://native:latest --ref ocidir://native:amd64 --ref ocidir://native:arm64
+          "$tool" image export ocidir://native:latest --name gitea-mq:latest > combined.tar
+          for platform in linux/amd64 linux/arm64; do
+            "$tool" image inspect ocidir://native:latest --platform "$platform" --format '{{.OS}}/{{.Architecture}} {{json .Config.Entrypoint}}'
+          done
