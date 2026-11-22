@@ -96,6 +96,9 @@ jobs:
   cross:
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch' && !inputs.publish
+    strategy:
+      matrix:
+        profile: [default, two-cores]
     steps:
       - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
@@ -104,7 +107,12 @@ jobs:
             extra-substituters = https://cache.thalheim.io
             extra-trusted-public-keys = cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc=
       - name: Cross-build both images on one runner
-        run: nix build .#gitea-mq-docker --print-build-logs
+        env:
+          BUILD_PROFILE: ${{ matrix.profile }}
+        run: |
+          opts=()
+          if [[ "$BUILD_PROFILE" == two-cores ]]; then opts+=(--cores 2 --max-jobs 2); fi
+          nix build .#gitea-mq-docker --print-build-logs "${opts[@]}"
   native:
     if: github.event_name == 'workflow_dispatch' && !inputs.publish
     strategy:
