@@ -6,6 +6,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Push the prepared image to GHCR
+        type: boolean
+        default: true
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -37,27 +42,51 @@ jobs:
           extra_nix_config: |
             extra-substituters = https://cache.thalheim.io
             extra-trusted-public-keys = cache.thalheim.io-1:R7msbosLEZKrxk/lKxf9BTjOOH7Ax3H0Qj0/6wiHOgc=
-      - name: Build Docker image
+      - name: Resolve image derivation
+        id: image
         run: |
-          nix build .#gitea-mq-docker --print-build-logs
-      - name: Push images
+          drv=$(nix eval --raw .#gitea-mq-docker.drvPath)
+          echo "key=oci-archive-v1-${drv##*/}" >> "$GITHUB_OUTPUT"
+      - name: Restore the Nix image archive
+        id: cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}/gitea-mq-image.tar
+          key: ${{ steps.image.outputs.key }}
+      - name: Build Docker image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          # The GitHub runner has four cores and builds both Go targets in parallel.
+          nix build .#gitea-mq-docker --cores 2 --max-jobs 2 --print-build-logs
+          cp result "$RUNNER_TEMP/gitea-mq-image.tar"
+      - name: Prepare image for publishing
         env:
-          REGCTL_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           LABELS: ${{ steps.meta.outputs.labels }}
         run: |
-          set -xve
-          PATH="$(nix build --inputs-from . nixpkgs#regctl --print-out-paths --no-link)/bin:$PATH"
-          regctl registry login "$REGISTRY" -u "${{ github.actor }}" --pass-stdin <<< "$REGCTL_PASSWORD"
-          regctl image import "ocidir://local:gitea-mq" ./result
-          # Apply the labels computed by docker/metadata-action (revision,
-          # created, version, source) to every platform's image config.
+          regctl_bin="$(nix build --inputs-from . nixpkgs#regctl --print-out-paths --no-link)/bin"
+          echo "$regctl_bin" >> "$GITHUB_PATH"
+          export PATH="$regctl_bin:$PATH"
+
+          image=ocidir://local:gitea-mq
+          regctl image import "$image" "$RUNNER_TEMP/gitea-mq-image.tar"
           label_args=()
           while IFS= read -r label; do
             if [ -n "$label" ]; then label_args+=(--label "$label"); fi
           done <<< "$LABELS"
-          if [ "${#label_args[@]}" -gt 0 ]; then
-            regctl image mod "ocidir://local:gitea-mq" --replace "${label_args[@]}"
-          fi
-          for tag in $(echo '${{ steps.meta.outputs.tags }}' | tr ' ' '\n'); do
-            regctl image copy "ocidir://local:gitea-mq" "$tag"
-          done
+          regctl image mod "$image" --replace "${label_args[@]}"
+
+          bash bin/publish-image.sh "$image" "$GITHUB_SHA"
+      - name: Save the verified Nix image archive
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}/gitea-mq-image.tar
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Push images
+        if: github.event_name != 'workflow_dispatch' || inputs.publish
+        env:
+          REGCTL_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          regctl registry login "$REGISTRY" -u "$GITHUB_ACTOR" --pass-stdin <<< "$REGCTL_PASSWORD"
+          bash bin/publish-image.sh ocidir://local:gitea-mq "$GITHUB_SHA" "$REGISTRY/$IMAGE_NAME" <<< "$TAGS"

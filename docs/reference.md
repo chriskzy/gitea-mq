@@ -552,9 +552,13 @@ The container workflow publishes a multi-arch (amd64/arm64) image to
 CA certificates; configuration is via the environment variables above. It needs
 a PostgreSQL database; the bare-clone cache lives in `/var/cache/gitea-mq`.
 
-Locally built image configs include OCI revision and creation labels when the
-flake provides revision and timestamp metadata. The creation label uses the
-source timestamp so rebuilds are reproducible.
+The publish workflow adds OCI revision and creation labels to both image
+configs before pushing to GHCR. The local Nix archive is independent of
+commit metadata and can be reused when its build inputs stay the same.
+The workflow pushes the SHA tag first and verifies both platform configs by
+registry digest before updating branch and release tags.
+To verify an image without pushing it, run the workflow manually with
+`publish` disabled.
 
 ```yaml
 services:
