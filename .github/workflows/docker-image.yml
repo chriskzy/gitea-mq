@@ -56,7 +56,8 @@ jobs:
       - name: Build Docker image
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          nix build .#gitea-mq-docker --print-build-logs
+          # The GitHub runner has four cores and builds both Go targets in parallel.
+          nix build .#gitea-mq-docker --cores 2 --max-jobs 2 --print-build-logs
           cp result "$RUNNER_TEMP/gitea-mq-image.tar"
       - name: Prepare image for publishing
         env:
