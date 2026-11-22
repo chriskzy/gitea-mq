@@ -16,6 +16,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
+    if: inputs.publish
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -92,3 +93,43 @@ jobs:
           while IFS= read -r tag; do
             regctl image copy "ocidir://local:gitea-mq" "$tag"
           done <<< "$TAGS"
+  compare:
+    if: github.event_name == 'workflow_dispatch' && !inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@v31
+      - name: Compare image derivations after metadata and source changes
+        run: |
+          set -euo pipefail
+          old="$RUNNER_TEMP/original"
+          new="$RUNNER_TEMP/candidate"
+          git worktree add --detach "$old" 582497b50e2c1fd28e51a07159ad8e93d68f0580
+          git worktree add --detach "$new" HEAD^
+          for tree in "$old" "$new"; do
+            before=$(nix eval --raw "$tree#gitea-mq-docker.drvPath")
+            git -C "$tree" -c user.name='CI probe' -c user.email='ci-probe@example.invalid' commit --allow-empty -m 'Change commit metadata only'
+            after=$(nix eval --raw "$tree#gitea-mq-docker.drvPath")
+            printf '%s before=%s after=%s\n' "$tree" "$before" "$after"
+            nix-store --query --requisites "$before" | grep '\.drv$' | sort > "$tree.before"
+            nix-store --query --requisites "$after" | grep '\.drv$' | sort > "$tree.after"
+            echo "Changed derivations: $(comm -13 "$tree.before" "$tree.after" | wc -l)"
+            if [[ "$tree" == "$old" ]]; then
+              test "$before" != "$after"
+              comm -13 "$tree.before" "$tree.after" | cut -d- -f2-
+            else
+              test "$before" = "$after"
+            fi
+          done
+          printf '\n// Change a Go source input for the cache probe.\n' >> "$new/cmd/gitea-mq/main.go"
+          git -C "$new" add cmd/gitea-mq/main.go
+          git -C "$new" -c user.name='CI probe' -c user.email='ci-probe@example.invalid' commit -m 'Change a Go source input'
+          changed=$(nix eval --raw "$new#gitea-mq-docker.drvPath")
+          echo "Go source change: $changed"
+          test "$after" != "$changed"
+      - name: Check Nix formatting
+        run: nix fmt -- --ci flake.nix nix/docker.nix
