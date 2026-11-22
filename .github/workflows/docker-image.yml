@@ -47,9 +47,9 @@ jobs:
         run: |
           drv=$(nix eval --raw .#gitea-mq-docker.drvPath)
           echo "key=oci-archive-v1-${drv##*/}" >> "$GITHUB_OUTPUT"
-      - name: Cache the unlabelled image archive
+      - name: Restore the Nix image archive
         id: cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ runner.temp }}/gitea-mq-image.tar
           key: ${{ steps.image.outputs.key }}
@@ -74,14 +74,13 @@ jobs:
           done <<< "$LABELS"
           regctl image mod "$image" --replace "${label_args[@]}"
 
-          for platform in linux/amd64 linux/arm64; do
-            revision=$(regctl image inspect "$image" --platform "$platform" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
-            if [ "$revision" != "$GITHUB_SHA" ]; then
-              echo "::error::$platform image revision '$revision' differs from the checkout '$GITHUB_SHA'"
-              exit 1
-            fi
-            echo "$platform image revision $revision"
-          done
+          bash bin/publish-image.sh "$image" "$GITHUB_SHA"
+      - name: Save the verified Nix image archive
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}/gitea-mq-image.tar
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Push images
         if: github.event_name != 'workflow_dispatch' || inputs.publish
         env:
@@ -89,6 +88,4 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           regctl registry login "$REGISTRY" -u "$GITHUB_ACTOR" --pass-stdin <<< "$REGCTL_PASSWORD"
-          while IFS= read -r tag; do
-            regctl image copy "ocidir://local:gitea-mq" "$tag"
-          done <<< "$TAGS"
+          bash bin/publish-image.sh ocidir://local:gitea-mq "$GITHUB_SHA" "$REGISTRY/$IMAGE_NAME" <<< "$TAGS"

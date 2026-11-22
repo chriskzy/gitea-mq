@@ -555,6 +555,8 @@ a PostgreSQL database; the bare-clone cache lives in `/var/cache/gitea-mq`.
 The publish workflow adds OCI revision and creation labels to both image
 configs before pushing to GHCR. The local Nix archive is independent of
 commit metadata and can be reused when its build inputs stay the same.
+The workflow pushes the SHA tag first and verifies both platform configs by
+registry digest before updating branch and release tags.
 To verify an image without pushing it, run the workflow manually with
 `publish` disabled.
 
